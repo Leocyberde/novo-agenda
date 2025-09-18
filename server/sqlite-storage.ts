@@ -1,6 +1,6 @@
 import { type User, type InsertUser, type Merchant, type InsertMerchant, type Service, type InsertService, type Employee, type InsertEmployee, type Client, type InsertClient, type Appointment, type InsertAppointment, type AvailabilityData, type AppointmentStatusData } from "@shared/schema";
 import { db, initializeDatabase } from "./db";
-import { users, merchants, services, employees, clients, appointments, employeeDaysOff, penalties, promotions, type EmployeeDayOff, type InsertEmployeeDayOff, type Promotion, type InsertPromotion } from "@shared/schema";
+import { users, merchants, services, employees, clients, appointments, employeeDaysOff, penalties, promotions, type EmployeeDayOff, type InsertEmployeeDayOff, type Promotion, type InsertPromotion, systemSettings, type SystemSetting } from "@shared/schema";
 import { eq, count, gte, and, sql, lte, desc, asc, inArray, or } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import bcrypt from "bcrypt";
@@ -12,10 +12,8 @@ import { format, subDays } from 'date-fns';
 export class PostgreSQLStorage implements IStorage {
   private initialized = false;
 
-
-
-
-
+  // Using db instance from ./db for all operations
+  private db = db;
 
 
   constructor() {
@@ -26,37 +24,40 @@ export class PostgreSQLStorage implements IStorage {
     if (!this.initialized) {
       await initializeDatabase();
       // Check if database exists and has tables
-      const tables = await db.select({ tableName: sql<string>`tablename` })
+      const tables = await this.db.select({ tableName: sql<string>`tablename` })
         .from(sql`pg_catalog.pg_tables`)
         .where(sql`schemaname != \'pg_catalog\' AND schemaname != \'information_schema\'`)
         .execute();
 
       if (tables.length === 0) {
         console.log("Creating database tables...");
-        // Create tables manually since we don't have migration files
-        // The tables are already created by the schema definitions
+        // The tables are already created by the schema definitions,
+        // drizzle-kit will handle migrations.
       }
 
       // Ensure all required columns exist
-
+      // This is typically handled by migrations. If not using migrations, manual checks would be needed.
 
       // Update existing employees to work all days including Sunday
+      // This comment suggests a past manual update or a future task.
+      // No specific code change needed here based on the comment alone.
 
 
       this.initialized = true;
+      console.log("Database initialized successfully.");
     }
   }
 
   // User methods
   async getUser(id: string): Promise<User | undefined> {
     if (!this.initialized) await this.initialize();
-    const user = (await db.select().from(users).where(eq(users.id, id)).execute())[0];
+    const user = (await this.db.select().from(users).where(eq(users.id, id)).execute())[0];
     return user || undefined;
   }
 
   async getUserByEmail(email: string): Promise<User | undefined> {
     if (!this.initialized) await this.initialize();
-    const user = (await db.select().from(users).where(eq(users.email, email)).execute())[0];
+    const user = (await this.db.select().from(users).where(eq(users.email, email)).execute())[0];
     return user || undefined;
   }
 
@@ -70,21 +71,23 @@ export class PostgreSQLStorage implements IStorage {
       password: hashedPassword,
       role: insertUser.role || "merchant",
       createdAt: new Date(),
+      updatedAt: new Date(), // Ensure updatedAt is set
     };
 
-    await db.insert(users).values(user).execute();
+    await this.db.insert(users).values(user).execute();
     return user;
   }
 
-  async updateUser(id: string, updates: any): Promise<any> {
-    await db.update(users).set({ ...updates, updatedAt: new Date() }).where(eq(users.id, id)).execute();
+  async updateUser(id: string, updates: Partial<User>): Promise<User | undefined> {
+    if (!this.initialized) await this.initialize();
+    await this.db.update(users).set({ ...updates, updatedAt: new Date() }).where(eq(users.id, id)).execute();
     return this.getUser(id);
   }
 
   async updateUserPassword(id: string, newPassword: string): Promise<boolean> {
     try {
       const hashedPassword = await bcrypt.hash(newPassword, 10);
-      await db.update(users).set({ password: hashedPassword, updatedAt: new Date() }).where(eq(users.id, id)).execute();
+      await this.db.update(users).set({ password: hashedPassword, updatedAt: new Date() }).where(eq(users.id, id)).execute();
       return true;
     } catch (error) {
       console.error("Error updating user password:", error);
@@ -95,19 +98,19 @@ export class PostgreSQLStorage implements IStorage {
   // Merchant methods
   async getMerchant(id: string): Promise<Merchant | undefined> {
     if (!this.initialized) await this.initialize();
-    const merchant = (await db.select().from(merchants).where(eq(merchants.id, id)).execute())[0];
+    const merchant = (await this.db.select().from(merchants).where(eq(merchants.id, id)).execute())[0];
     return merchant || undefined;
   }
 
   async getMerchantByEmail(email: string): Promise<Merchant | undefined> {
     if (!this.initialized) await this.initialize();
-    const merchant = (await db.select().from(merchants).where(eq(merchants.email, email)).execute())[0];
+    const merchant = (await this.db.select().from(merchants).where(eq(merchants.email, email)).execute())[0];
     return merchant || undefined;
   }
 
   async getAllMerchants(): Promise<Merchant[]> {
     if (!this.initialized) await this.initialize();
-    const allMerchants = await db.select().from(merchants).execute();
+    const allMerchants = await this.db.select().from(merchants).execute();
     return allMerchants.sort((a, b) =>
       new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime()
     );
@@ -125,14 +128,17 @@ export class PostgreSQLStorage implements IStorage {
       status: insertMerchant.status || "pending",
       createdAt: now,
       updatedAt: now,
+      workDays: insertMerchant.workDays || "[0,1,2,3,4,5,6]", // Default to all days
+      startTime: insertMerchant.startTime || "09:00", // Default start time
+      endTime: insertMerchant.endTime || "18:00", // Default end time
     };
 
-    await db.insert(merchants).values(merchant).execute();
+    await this.db.insert(merchants).values(merchant).execute();
     return merchant;
   }
 
   async updateMerchant(id: string, updates: Partial<InsertMerchant>): Promise<Merchant | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const existingMerchant = await this.getMerchant(id);
     if (!existingMerchant) return undefined;
 
@@ -148,7 +154,7 @@ export class PostgreSQLStorage implements IStorage {
       updatedAt: new Date(),
     };
 
-    await db.update(merchants).set(updatedMerchant).where(eq(merchants.id, id)).execute();
+    await this.db.update(merchants).set(updatedMerchant).where(eq(merchants.id, id)).execute();
 
     // If working hours are being updated, sync employee hours
     if (updates.startTime || updates.endTime || updates.workDays) {
@@ -161,7 +167,7 @@ export class PostgreSQLStorage implements IStorage {
   async updateMerchantPassword(id: string, newPassword: string): Promise<boolean> {
     try {
       const hashedPassword = await bcrypt.hash(newPassword, 10);
-      await db.update(merchants).set({ password: hashedPassword, updatedAt: new Date() }).where(eq(merchants.id, id)).execute();
+      await this.db.update(merchants).set({ password: hashedPassword, updatedAt: new Date() }).where(eq(merchants.id, id)).execute();
       return true;
     } catch (error) {
       console.error("Error updating merchant password:", error);
@@ -199,14 +205,14 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async deleteMerchant(id: string): Promise<boolean> {
-    await this.initialize();
-    const result = await db.delete(merchants).where(eq(merchants.id, id)).execute();
+    if (!this.initialized) await this.initialize();
+    const result = await this.db.delete(merchants).where(eq(merchants.id, id)).execute();
     return result.rowCount > 0;
   }
 
   async getMerchantsByStatus(status: string): Promise<Merchant[]> {
-    await this.initialize();
-    return db.select().from(merchants).where(eq(merchants.status, status)).execute();
+    if (!this.initialized) await this.initialize();
+    return this.db.select().from(merchants).where(eq(merchants.status, status)).execute();
   }
 
   async getMerchantsStats(): Promise<{
@@ -216,8 +222,8 @@ export class PostgreSQLStorage implements IStorage {
     inactive: number;
     thisMonth: number;
   }> {
-    await this.initialize();
-    const allMerchants = await db.select().from(merchants).execute();
+    if (!this.initialized) await this.initialize();
+    const allMerchants = await this.db.select().from(merchants).execute();
     const now = new Date();
     const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
@@ -232,24 +238,21 @@ export class PostgreSQLStorage implements IStorage {
 
   // Service methods
   async getService(id: string): Promise<Service | undefined> {
-    await this.initialize();
-    const service = (await db.select().from(services).where(eq(services.id, id)).execute())[0];
+    if (!this.initialized) await this.initialize();
+    const service = (await this.db.select().from(services).where(eq(services.id, id)).execute())[0];
     return service || undefined;
   }
 
   async getServicesByMerchant(merchantId: string): Promise<Service[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
-    console.log(`\n=== SQLiteStorage.getServicesByMerchant DEBUG ===`);
+    console.log(`\n=== PostgreSQLStorage.getServicesByMerchant DEBUG ===`);
     console.log(`🔍 Input merchantId: "${merchantId}" (type: ${typeof merchantId})`);
-    console.log(`🔍 MerchantId length: ${merchantId?.length}`);
 
-    // Get merchant info for context
     const merchant = await this.getMerchant(merchantId);
     console.log(`🏪 Merchant info: ${merchant ? `"${merchant.name}" (${merchant.email})` : 'NOT FOUND'}`);
 
-    // First, let's see ALL services in the database for debugging
-    const allServices = db.select().from(services).execute();
+    const allServices = await this.db.select().from(services).execute();
     console.log(`\n📊 DATABASE STATE - Total services: ${allServices.length}`);
     allServices.forEach((service, index) => {
       const belongsToRequested = service.merchantId === merchantId;
@@ -257,16 +260,14 @@ export class PostgreSQLStorage implements IStorage {
       console.log(`  [${index}] "${service.name}" (ID: ${service.id.substring(0, 8)}...) -> merchantId: "${service.merchantId.substring(0, 8)}..." ${merchantInfo}`);
     });
 
-    // Now execute the filtered query
     console.log(`\n🔎 Executing query: SELECT * FROM services WHERE merchantId = "${merchantId}"`);
-    const result = db.select().from(services).where(eq(services.merchantId, merchantId)).execute();
+    const result = await this.db.select().from(services).where(eq(services.merchantId, merchantId)).execute();
 
     console.log(`\n📋 QUERY RESULT - Returned ${result.length} services:`);
     result.forEach((service, index) => {
       console.log(`  [${index}] "${service.name}" (ID: ${service.id.substring(0, 8)}...) merchantId: "${service.merchantId.substring(0, 8)}..."`);
     });
 
-    // CRITICAL SECURITY VERIFICATION
     const invalidServices = result.filter(service => service.merchantId !== merchantId);
     const validServices = result.filter(service => service.merchantId === merchantId);
 
@@ -274,7 +275,6 @@ export class PostgreSQLStorage implements IStorage {
     console.log(`✅ Valid services (belong to ${merchantId.substring(0, 8)}...): ${validServices.length}`);
     console.log(`❌ Invalid services (belong to other merchants): ${invalidServices.length}`);
 
-    // If any invalid services found, this is a CRITICAL SECURITY BREACH
     if (invalidServices.length > 0) {
       console.error(`\n🚨🚨🚨 CRITICAL SECURITY BREACH DETECTED! 🚨🚨🚨`);
       console.error(`❌ Found ${invalidServices.length} services that don't belong to merchant ${merchantId}:`);
@@ -282,20 +282,19 @@ export class PostgreSQLStorage implements IStorage {
         console.error(`  - LEAKED: "${service.name}" (ID: ${service.id}) belongs to merchant: "${service.merchantId}"`);
       });
       console.error(`🚨 RETURNING ONLY VALID SERVICES AS EMERGENCY SECURITY MEASURE 🚨`);
-      console.log(`=== END SQLiteStorage DEBUG (SECURITY BREACH PREVENTED) ===\n`);
+      console.log(`=== END PostgreSQLStorage DEBUG (SECURITY BREACH PREVENTED) ===\n`);
       return validServices;
     }
 
-    // All good
     console.log(`\n✅ SECURITY VERIFICATION PASSED`);
     console.log(`🎯 All ${result.length} services verified to belong to merchant ${merchantId.substring(0, 8)}...`);
-    console.log(`=== END SQLiteStorage DEBUG (SUCCESS) ===\n`);
+    console.log(`=== END PostgreSQLStorage DEBUG (SUCCESS) ===\n`);
     return result;
   }
 
   async getActiveServicesByMerchant(merchantId: string): Promise<Service[]> {
-    await this.initialize();
-    return db.select().from(services)
+    if (!this.initialized) await this.initialize();
+    return this.db.select().from(services)
       .where(and(
         eq(services.merchantId, merchantId),
         eq(services.isActive, true)
@@ -304,7 +303,7 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async createService(insertService: InsertService): Promise<Service> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const id = randomUUID();
     const now = new Date();
     const service: Service = {
@@ -314,14 +313,16 @@ export class PostgreSQLStorage implements IStorage {
       isActive: insertService.isActive ?? true,
       createdAt: now,
       updatedAt: now,
+      duration: insertService.duration || 60, // Default duration to 60 minutes
+      price: insertService.price || 0, // Default price to 0
     };
 
-    await db.insert(services).values(service).execute();
+    await this.db.insert(services).values(service).execute();
     return service;
   }
 
   async updateService(id: string, updates: Partial<InsertService>): Promise<Service | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const existingService = await this.getService(id);
     if (!existingService) return undefined;
 
@@ -331,23 +332,22 @@ export class PostgreSQLStorage implements IStorage {
       updatedAt: new Date(),
     };
 
-    await db.update(services).set(updatedService).where(eq(services.id, id)).execute();
+    await this.db.update(services).set(updatedService).where(eq(services.id, id)).execute();
     return updatedService;
   }
 
   async deleteService(id: string): Promise<boolean> {
-    await this.initialize();
-    const result = await db.delete(services).where(eq(services.id, id)).execute();
+    if (!this.initialized) await this.initialize();
+    const result = await this.db.delete(services).where(eq(services.id, id)).execute();
     return result.rowCount > 0;
   }
 
-  // Method to fix service merchant assignment
   async updateServiceMerchant(serviceId: string, newMerchantId: string): Promise<boolean> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     console.log(`🔧 Updating service ${serviceId.substring(0, 8)}... to merchant ${newMerchantId.substring(0, 8)}...`);
 
-    const result = db.update(services)
+    const result = await this.db.update(services)
       .set({
         merchantId: newMerchantId,
         updatedAt: new Date()
@@ -361,29 +361,27 @@ export class PostgreSQLStorage implements IStorage {
 
   // Employee methods
   async getEmployee(id: string): Promise<Employee | undefined> {
-    await this.initialize();
-    const employee = (await db.select().from(employees).where(eq(employees.id, id)).execute())[0];
+    if (!this.initialized) await this.initialize();
+    const employee = (await this.db.select().from(employees).where(eq(employees.id, id)).execute())[0];
     return employee || undefined;
   }
 
   async getEmployeeByEmail(email: string): Promise<Employee | undefined> {
-    await this.initialize();
-    const employee = (await db.select().from(employees).where(eq(employees.email, email)).execute())[0];
+    if (!this.initialized) await this.initialize();
+    const employee = (await this.db.select().from(employees).where(eq(employees.email, email)).execute())[0];
     return employee || undefined;
   }
 
   async getEmployeesByMerchant(merchantId: string): Promise<Employee[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
-    console.log(`\n=== SQLiteStorage.getEmployeesByMerchant DEBUG ===`);
+    console.log(`\n=== PostgreSQLStorage.getEmployeesByMerchant DEBUG ===`);
     console.log(`🔍 Input merchantId: "${merchantId}" (type: ${typeof merchantId})`);
 
-    // Get merchant info for context
     const merchant = await this.getMerchant(merchantId);
     console.log(`🏪 Merchant info: ${merchant ? `"${merchant.name}" (${merchant.email})` : 'NOT FOUND'}`);
 
-    // First, let's see ALL employees in the database for debugging
-    const allEmployees = db.select().from(employees).execute();
+    const allEmployees = await this.db.select().from(employees).execute();
     console.log(`\n📊 DATABASE STATE - Total employees: ${allEmployees.length}`);
     allEmployees.forEach((employee, index) => {
       const belongsToRequested = employee.merchantId === merchantId;
@@ -391,16 +389,14 @@ export class PostgreSQLStorage implements IStorage {
       console.log(`  [${index}] "${employee.name}" (ID: ${employee.id.substring(0, 8)}...) -> merchantId: "${employee.merchantId.substring(0, 8)}..." ${status}`);
     });
 
-    // Now execute the filtered query
     console.log(`\n🔎 Executing query: SELECT * FROM employees WHERE merchantId = "${merchantId}"`);
-    const result = db.select().from(employees).where(eq(employees.merchantId, merchantId)).execute();
+    const result = await this.db.select().from(employees).where(eq(employees.merchantId, merchantId)).execute();
 
     console.log(`\n📋 QUERY RESULT - Returned ${result.length} employees:`);
     result.forEach((employee, index) => {
       console.log(`  [${index}] "${employee.name}" (ID: ${employee.id.substring(0, 8)}...) merchantId: "${employee.merchantId.substring(0, 8)}..."`);
     });
 
-    // CRITICAL SECURITY VERIFICATION
     const invalidEmployees = result.filter(employee => employee.merchantId !== merchantId);
     const validEmployees = result.filter(employee => employee.merchantId === merchantId);
 
@@ -415,20 +411,19 @@ export class PostgreSQLStorage implements IStorage {
         console.error(`  - LEAKED: "${employee.name}" (ID: ${employee.id}) belongs to merchant: "${employee.merchantId}"`);
       });
       console.error(`🚨 RETURNING ONLY VALID EMPLOYEES AS EMERGENCY SECURITY MEASURE 🚨`);
-      console.log(`=== END SQLiteStorage DEBUG (SECURITY BREACH PREVENTED) ===\n`);
+      console.log(`=== END PostgreSQLStorage DEBUG (SECURITY BREACH PREVENTED) ===\n`);
       return validEmployees;
     }
 
-    // All good
     console.log(`\n✅ SECURITY VERIFICATION PASSED`);
     console.log(`🎯 All ${result.length} employees verified to belong to merchant ${merchantId.substring(0, 8)}...`);
-    console.log(`=== END SQLiteStorage DEBUG (SUCCESS) ===\n`);
+    console.log(`=== END PostgreSQLStorage DEBUG (SUCCESS) ===\n`);
     return result;
   }
 
   async getActiveEmployeesByMerchant(merchantId: string): Promise<Employee[]> {
-    await this.initialize();
-    return db.select().from(employees)
+    if (!this.initialized) await this.initialize();
+    return this.db.select().from(employees)
       .where(and(
         eq(employees.merchantId, merchantId),
         eq(employees.isActive, true)
@@ -437,7 +432,7 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async createEmployee(insertEmployee: InsertEmployee): Promise<Employee> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const hashedPassword = await bcrypt.hash(insertEmployee.password, 10);
     const id = randomUUID();
     const now = new Date();
@@ -457,18 +452,19 @@ export class PostgreSQLStorage implements IStorage {
       paymentValue: insertEmployee.paymentValue || 0,
       createdAt: now,
       updatedAt: now,
+      overtimeHours: 0, // Initialize overtime hours to 0
+      lastOvertimeDate: null, // Initialize lastOvertimeDate to null
     };
 
-    db.insert(employees).values(employee).run();
+    await this.db.insert(employees).values(employee).execute();
     return employee;
   }
 
   async updateEmployee(id: string, updates: Partial<InsertEmployee>): Promise<Employee | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const existingEmployee = await this.getEmployee(id);
     if (!existingEmployee) return undefined;
 
-    // Hash password if it's being updated
     const processedUpdates = { ...updates };
     if (processedUpdates.password) {
       processedUpdates.password = await bcrypt.hash(processedUpdates.password, 10);
@@ -480,15 +476,14 @@ export class PostgreSQLStorage implements IStorage {
       updatedAt: new Date(),
     };
 
-    db.update(employees).set(updatedEmployee).where(eq(employees.id, id)).run();
+    await this.db.update(employees).set(updatedEmployee).where(eq(employees.id, id)).execute();
     return updatedEmployee;
   }
 
   async updateEmployeePassword(id: string, newPassword: string): Promise<boolean> {
     try {
       const hashedPassword = await bcrypt.hash(newPassword, 10);
-      const sql = `UPDATE employees SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`;
-      // await this.executeQuery(sql, [hashedPassword, id]); // Temporarily disabled
+      await this.db.update(employees).set({ password: hashedPassword, updatedAt: new Date() }).where(eq(employees.id, id)).execute();
       return true;
     } catch (error) {
       console.error("Error updating employee password:", error);
@@ -497,36 +492,34 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async deleteEmployee(id: string): Promise<boolean> {
-    await this.initialize();
-    const result = db.delete(employees).where(eq(employees.id, id)).run();
-    return result.changes > 0;
+    if (!this.initialized) await this.initialize();
+    const result = await this.db.delete(employees).where(eq(employees.id, id)).execute();
+    return result.rowCount > 0;
   }
 
   // Client methods
   async getClient(id: string): Promise<Client | undefined> {
-    await this.initialize();
-    const client = (await db.select().from(clients).where(eq(clients.id, id)).execute())[0];
+    if (!this.initialized) await this.initialize();
+    const client = (await this.db.select().from(clients).where(eq(clients.id, id)).execute())[0];
     return client || undefined;
   }
 
   async getClientByEmail(email: string): Promise<Client | undefined> {
     if (!this.initialized) await this.initialize();
-    const client = (await db.select().from(clients).where(eq(clients.email, email)).execute())[0];
+    const client = (await this.db.select().from(clients).where(eq(clients.email, email)).execute())[0];
     return client || undefined;
   }
 
   async getClientsByMerchant(merchantId: string): Promise<Client[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
-    console.log(`\n=== SQLiteStorage.getClientsByMerchant DEBUG ===`);
+    console.log(`\n=== PostgreSQLStorage.getClientsByMerchant DEBUG ===`);
     console.log(`🔍 Input merchantId: "${merchantId}" (type: ${typeof merchantId})`);
 
-    // Get merchant info for context
     const merchant = await this.getMerchant(merchantId);
     console.log(`🏪 Merchant info: ${merchant ? `"${merchant.name}" (${merchant.email})` : 'NOT FOUND'}`);
 
-    // First, let's see ALL clients in the database for debugging
-    const allClients = db.select().from(clients).execute();
+    const allClients = await this.db.select().from(clients).execute();
     console.log(`\n📊 DATABASE STATE - Total clients: ${allClients.length}`);
     allClients.forEach((client, index) => {
       const belongsToRequested = client.merchantId === merchantId;
@@ -534,16 +527,14 @@ export class PostgreSQLStorage implements IStorage {
       console.log(`  [${index}] "${client.name}" (ID: ${client.id.substring(0, 8)}...) -> merchantId: "${client.merchantId.substring(0, 8)}..." ${status}`);
     });
 
-    // Now execute the filtered query
     console.log(`\n🔎 Executing query: SELECT * FROM clients WHERE merchantId = "${merchantId}"`);
-    const result = db.select().from(clients).where(eq(clients.merchantId, merchantId)).execute();
+    const result = await this.db.select().from(clients).where(eq(clients.merchantId, merchantId)).execute();
 
     console.log(`\n📋 QUERY RESULT - Returned ${result.length} clients:`);
     result.forEach((client, index) => {
       console.log(`  [${index}] "${client.name}" (ID: ${client.id.substring(0, 8)}...) merchantId: "${client.merchantId.substring(0, 8)}..."`);
     });
 
-    // CRITICAL SECURITY VERIFICATION
     const invalidClients = result.filter(client => client.merchantId !== merchantId);
     const validClients = result.filter(client => client.merchantId === merchantId);
 
@@ -558,20 +549,19 @@ export class PostgreSQLStorage implements IStorage {
         console.error(`  - LEAKED: "${client.name}" (ID: ${client.id}) belongs to merchant: "${client.merchantId}"`);
       });
       console.error(`🚨 RETURNING ONLY VALID CLIENTS AS EMERGENCY SECURITY MEASURE 🚨`);
-      console.log(`=== END SQLiteStorage DEBUG (SECURITY BREACH PREVENTED) ===\n`);
+      console.log(`=== END PostgreSQLStorage DEBUG (SECURITY BREACH PREVENTED) ===\n`);
       return validClients;
     }
 
-    // All good
     console.log(`\n✅ SECURITY VERIFICATION PASSED`);
     console.log(`🎯 All ${result.length} clients verified to belong to merchant ${merchantId.substring(0, 8)}...`);
-    console.log(`=== END SQLiteStorage DEBUG (SUCCESS) ===\n`);
+    console.log(`=== END PostgreSQLStorage DEBUG (SUCCESS) ===\n`);
     return result;
   }
 
   async getActiveClientsByMerchant(merchantId: string): Promise<Client[]> {
-    await this.initialize();
-    return db.select().from(clients)
+    if (!this.initialized) await this.initialize();
+    return this.db.select().from(clients)
       .where(and(
         eq(clients.merchantId, merchantId),
         eq(clients.isActive, true)
@@ -580,7 +570,7 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async createClient(insertClient: InsertClient): Promise<Client> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const hashedPassword = await bcrypt.hash(insertClient.password, 10);
     const id = randomUUID();
     const now = new Date();
@@ -594,16 +584,15 @@ export class PostgreSQLStorage implements IStorage {
       updatedAt: now,
     };
 
-    db.insert(clients).values(client).run();
+    await this.db.insert(clients).values(client).execute();
     return client;
   }
 
   async updateClient(id: string, updates: Partial<InsertClient>): Promise<Client | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const existingClient = await this.getClient(id);
     if (!existingClient) return undefined;
 
-    // Hash password if it's being updated
     const processedUpdates = { ...updates };
     if (processedUpdates.password) {
       processedUpdates.password = await bcrypt.hash(processedUpdates.password, 10);
@@ -615,15 +604,14 @@ export class PostgreSQLStorage implements IStorage {
       updatedAt: new Date(),
     };
 
-    db.update(clients).set(updatedClient).where(eq(clients.id, id)).run();
+    await this.db.update(clients).set(updatedClient).where(eq(clients.id, id)).execute();
     return updatedClient;
   }
 
   async updateClientPassword(id: string, newPassword: string): Promise<boolean> {
     try {
       const hashedPassword = await bcrypt.hash(newPassword, 10);
-      const sql = `UPDATE clients SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`;
-      // await this.executeQuery(sql, [hashedPassword, id]); // Temporarily disabled
+      await this.db.update(clients).set({ password: hashedPassword, updatedAt: new Date() }).where(eq(clients.id, id)).execute();
       return true;
     } catch (error) {
       console.error("Error updating client password:", error);
@@ -632,21 +620,21 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async deleteClient(id: string): Promise<boolean> {
-    await this.initialize();
-    const result = db.delete(clients).where(eq(clients.id, id)).run();
-    return result.changes > 0;
+    if (!this.initialized) await this.initialize();
+    const result = await this.db.delete(clients).where(eq(clients.id, id)).execute();
+    return result.rowCount > 0;
   }
 
   // Appointment methods
   async getAppointment(id: string): Promise<Appointment | undefined> {
-    await this.initialize();
-    const appointment = db.select().from(appointments).where(eq(appointments.id, id)).get();
-    return appointment || undefined;
+    if (!this.initialized) await this.initialize();
+    const appointment = await this.db.select().from(appointments).where(eq(appointments.id, id)).execute()
+    return appointment[0] || undefined;
   }
 
   async getAppointmentsByMerchant(merchantId: string): Promise<Appointment[]> {
-    await this.initialize();
-    return db.select({
+    if (!this.initialized) await this.initialize();
+    return this.db.select({
       id: appointments.id,
       merchantId: appointments.merchantId,
       serviceId: appointments.serviceId,
@@ -686,14 +674,14 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async getAppointmentsByClient(clientId: string): Promise<Appointment[]> {
-    await this.initialize();
-    return db.select().from(appointments).where(eq(appointments.clientId, clientId)).execute();
+    if (!this.initialized) await this.initialize();
+    return this.db.select().from(appointments).where(eq(appointments.clientId, clientId)).execute();
   }
 
   async getAppointmentsByDate(merchantId: string, date: string): Promise<Appointment[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
-    const appointmentsList = db.select({
+    const appointmentsList = this.db.select({
       id: appointments.id,
       merchantId: appointments.merchantId,
       serviceId: appointments.serviceId,
@@ -736,8 +724,8 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async getAppointmentsByDateRange(merchantId: string, startDate: string, endDate: string): Promise<Appointment[]> {
-    await this.initialize();
-    return db.select().from(appointments)
+    if (!this.initialized) await this.initialize();
+    return this.db.select().from(appointments)
       .where(and(
         eq(appointments.merchantId, merchantId),
         gte(appointments.appointmentDate, startDate),
@@ -748,10 +736,9 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async createAppointment(insertAppointment: InsertAppointment): Promise<Appointment> {
-    await this.initialize();
-    console.log('SQLiteStorage.createAppointment called with:', insertAppointment);
+    if (!this.initialized) await this.initialize();
+    console.log('PostgreSQLStorage.createAppointment called with:', insertAppointment);
 
-    // Check if the employee is on day off for the requested date
     if (insertAppointment.employeeId) {
       const isOnDayOff = await this.isEmployeeOnDayOff(insertAppointment.employeeId, insertAppointment.appointmentDate);
       if (isOnDayOff) {
@@ -761,10 +748,8 @@ export class PostgreSQLStorage implements IStorage {
 
     const now = new Date();
 
-    // Calculate end time based on service duration
     let endTime = insertAppointment.endTime;
     if (!endTime && insertAppointment.appointmentTime) {
-      // Get service duration and calculate end time
       const service = await this.getService(insertAppointment.serviceId);
       if (service) {
         const [hours, minutes] = insertAppointment.appointmentTime.split(':').map(Number);
@@ -773,7 +758,7 @@ export class PostgreSQLStorage implements IStorage {
         const finalMinutes = endMinutes % 60;
         endTime = `${endHour.toString().padStart(2, '0')}:${finalMinutes.toString().padStart(2, '0')}`;
       } else {
-        endTime = insertAppointment.appointmentTime; // Fallback
+        endTime = insertAppointment.appointmentTime;
       }
     }
 
@@ -806,7 +791,7 @@ export class PostgreSQLStorage implements IStorage {
     console.log('Appointment object to insert:', appointment);
 
     try {
-      const result = db.insert(appointments).values(appointment).run();
+      const result = await this.db.insert(appointments).values(appointment).execute();
       console.log('Database insert result:', result);
       return appointment;
     } catch (error) {
@@ -817,11 +802,10 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async updateAppointment(id: string, updates: Partial<InsertAppointment>): Promise<Appointment | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const existingAppointment = await this.getAppointment(id);
     if (!existingAppointment) return undefined;
 
-    // Check if the employee is on day off for the new date if date is being updated
     if (updates.employeeId && updates.appointmentDate && updates.appointmentDate !== existingAppointment.appointmentDate) {
       const isOnDayOff = await this.isEmployeeOnDayOff(updates.employeeId, updates.appointmentDate);
       if (isOnDayOff) {
@@ -835,43 +819,38 @@ export class PostgreSQLStorage implements IStorage {
       updatedAt: new Date(),
     };
 
-    // If status is completed, set completedAt
     if (updates.status === "completed") {
       updatedAppointment.completedAt = new Date();
     }
 
-    // Capture actual start time when status changes to in_progress (Brazil timezone GMT-3)
     if (updates.status === "in_progress" && !existingAppointment.actualStartTime) {
       const now = new Date();
-      // Convert to Brazil timezone (UTC-3) - properly account for local time
-      const brazilOffset = -3 * 60; // UTC-3 in minutes
+      const brazilOffset = -3 * 60;
       const brazilTime = new Date(now.getTime() + (brazilOffset * 60 * 1000));
       updatedAppointment.actualStartTime = `${brazilTime.getUTCHours().toString().padStart(2, '0')}:${brazilTime.getUTCMinutes().toString().padStart(2, '0')}`;
     }
 
-    // Capture actual end time when status changes to completed (Brazil timezone GMT-3)
     if (updates.status === "completed" && !existingAppointment.actualEndTime) {
       const now = new Date();
-      // Convert to Brazil timezone (UTC-3) - properly account for local time
-      const brazilOffset = -3 * 60; // UTC-3 in minutes
+      const brazilOffset = -3 * 60;
       const brazilTime = new Date(now.getTime() + (brazilOffset * 60 * 1000));
       updatedAppointment.actualEndTime = `${brazilTime.getUTCHours().toString().padStart(2, '0')}:${brazilTime.getUTCMinutes().toString().padStart(2, '0')}`;
     }
 
-    db.update(appointments).set(updatedAppointment).where(eq(appointments.id, id)).run();
+    await this.db.update(appointments).set(updatedAppointment).where(eq(appointments.id, id)).execute();
     return updatedAppointment;
   }
 
   async deleteAppointment(id: string): Promise<boolean> {
-    await this.initialize();
-    const result = db.delete(appointments).where(eq(appointments.id, id)).run();
-    return result.changes > 0;
+    if (!this.initialized) await this.initialize();
+    const result = await this.db.delete(appointments).where(eq(appointments.id, id)).execute();
+    return result.rowCount > 0;
   }
 
   async deleteAppointmentsByService(serviceId: string): Promise<number> {
-    await this.initialize();
-    const result = db.delete(appointments).where(eq(appointments.serviceId, serviceId)).run();
-    return result.changes;
+    if (!this.initialized) await this.initialize();
+    const result = await this.db.delete(appointments).where(eq(appointments.serviceId, serviceId)).execute();
+    return result.rowCount;
   }
 
   async getMerchantDashboardStats(merchantId: string): Promise<{
@@ -885,12 +864,12 @@ export class PostgreSQLStorage implements IStorage {
       active: number;
     };
   }> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     const now = new Date();
-    const today = now.toISOString().split('T')[0]; // YYYY-MM-DD format
+    const today = now.toISOString().split('T')[0];
     const thisWeekStart = new Date(now);
-    thisWeekStart.setDate(now.getDay() === 0 ? now.getDate() - 6 : now.getDate() - now.getDay() + (now.getDay() === 0 ? 0 : 1) ); // Start from Sunday or Monday depending on locale
+    thisWeekStart.setDate(now.getDay() === 0 ? now.getDate() - 6 : now.getDate() - now.getDay() + (now.getDay() === 0 ? 0 : 1));
     const thisWeek = thisWeekStart.toISOString().split('T')[0];
 
     const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -912,12 +891,11 @@ export class PostgreSQLStorage implements IStorage {
     };
   }
 
-  // Client-specific appointment methods
   async getClientAppointments(clientId: string, merchantId: string): Promise<Appointment[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     console.log(`Getting ALL appointments for client ${clientId} and merchant ${merchantId}`);
 
-    const result = await db.select({
+    const result = await this.db.select({
       id: appointments.id,
       merchantId: appointments.merchantId,
       serviceId: appointments.serviceId,
@@ -955,7 +933,6 @@ export class PostgreSQLStorage implements IStorage {
 
     console.log(`Found ${result.length} total appointments for client:`, result.map(r => ({ id: r.id, status: r.status, date: r.appointmentDate })));
 
-    // Enrich appointments with promotion information
     const appointmentsWithPromotions = await Promise.all(
       result.map(async (appointment) => {
         if (appointment.serviceId && appointment.servicePrice) {
@@ -976,8 +953,8 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async getClientAppointmentsByDate(clientId: string, merchantId: string, date: string): Promise<Appointment[]> {
-    await this.initialize();
-    const clientAppointments = await db.select({
+    if (!this.initialized) await this.initialize();
+    const clientAppointments = await this.db.select({
       id: appointments.id,
       merchantId: appointments.merchantId,
       serviceId: appointments.serviceId,
@@ -1015,7 +992,6 @@ export class PostgreSQLStorage implements IStorage {
       .orderBy(appointments.appointmentTime)
       .execute();
 
-    // Enrich appointments with promotion information
     const appointmentsWithPromotions = await Promise.all(
       clientAppointments.map(async (appointment) => {
         if (appointment.serviceId && appointment.servicePrice) {
@@ -1036,8 +1012,8 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async getClientAppointmentsByDateRange(clientId: string, merchantId: string, startDate: string, endDate: string): Promise<Appointment[]> {
-    await this.initialize();
-    const clientAppointments = await db.select({
+    if (!this.initialized) await this.initialize();
+    const clientAppointments = await this.db.select({
       id: appointments.id,
       merchantId: appointments.merchantId,
       serviceId: appointments.serviceId,
@@ -1079,12 +1055,11 @@ export class PostgreSQLStorage implements IStorage {
     return clientAppointments;
   }
 
-  // Missing appointment methods implementation
   async getAppointmentsByEmployee(employeeId: string, date?: string): Promise<Appointment[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     if (date) {
-      return db.select().from(appointments)
+      return this.db.select().from(appointments)
         .where(and(
           eq(appointments.employeeId, employeeId),
           eq(appointments.appointmentDate, date)
@@ -1093,15 +1068,15 @@ export class PostgreSQLStorage implements IStorage {
         .execute();
     }
 
-    return db.select().from(appointments)
+    return this.db.select().from(appointments)
       .where(eq(appointments.employeeId, employeeId))
       .orderBy(appointments.appointmentDate, appointments.appointmentTime)
       .execute();
   }
 
   async updateAppointmentStatus(id: string, statusUpdate: AppointmentStatusData & { paymentStatus?: string }): Promise<Appointment | undefined> {
-    await this.initialize();
-    console.log(`\n=== SQLiteStorage.updateAppointmentStatus DEBUG ===`);
+    if (!this.initialized) await this.initialize();
+    console.log(`\n=== PostgreSQLStorage.updateAppointmentStatus DEBUG ===`);
     console.log(`Appointment ID: ${id}`);
     console.log(`Status update:`, JSON.stringify(statusUpdate, null, 2));
 
@@ -1128,7 +1103,6 @@ export class PostgreSQLStorage implements IStorage {
       updatedAt: new Date(),
     };
 
-    // Handle payment status updates
     if (statusUpdate.paymentStatus !== undefined) {
       console.log(`💰 Updating payment status from "${(existingAppointment as any).paymentStatus}" to "${statusUpdate.paymentStatus}"`);
       (updatedAppointment as any).paymentStatus = statusUpdate.paymentStatus;
@@ -1140,27 +1114,22 @@ export class PostgreSQLStorage implements IStorage {
       console.log(`ℹ️  No payment status update requested`);
     }
 
-    // If status is completed, set completedAt
     if (statusUpdate.status === "completed") {
       updatedAppointment.completedAt = new Date();
       console.log(`✅ Setting completedAt timestamp: ${updatedAppointment.completedAt}`);
     }
 
-    // Capture actual start time when status changes to in_progress (Brazil timezone GMT-3)
     if (statusUpdate.status === "in_progress" && !existingAppointment.actualStartTime) {
       const now = new Date();
-      // Convert to Brazil timezone (UTC-3) - properly account for local time
-      const brazilOffset = -3 * 60; // UTC-3 in minutes
+      const brazilOffset = -3 * 60;
       const brazilTime = new Date(now.getTime() + (brazilOffset * 60 * 1000));
       updatedAppointment.actualStartTime = `${brazilTime.getUTCHours().toString().padStart(2, '0')}:${brazilTime.getUTCMinutes().toString().padStart(2, '0')}`;
       console.log(`✅ Setting actualStartTime: ${updatedAppointment.actualStartTime}`);
     }
 
-    // Capture actual end time when status changes to completed (Brazil timezone GMT-3)
     if (statusUpdate.status === "completed" && !existingAppointment.actualEndTime) {
       const now = new Date();
-      // Convert to Brazil timezone (UTC-3) - properly account for local time
-      const brazilOffset = -3 * 60; // UTC-3 in minutes
+      const brazilOffset = -3 * 60;
       const brazilTime = new Date(now.getTime() + (brazilOffset * 60 * 1000));
       updatedAppointment.actualEndTime = `${brazilTime.getUTCHours().toString().padStart(2, '0')}:${brazilTime.getUTCMinutes().toString().padStart(2, '0')}`;
       console.log(`✅ Setting actualEndTime: ${updatedAppointment.actualEndTime}`);
@@ -1178,51 +1147,48 @@ export class PostgreSQLStorage implements IStorage {
     try {
       console.log(`💾 Executing database update for appointment ${id}...`);
 
-      // Check the current state in database before update
-      const currentStateQuery = db.select().from(appointments).where(eq(appointments.id, id)).get();
+      const currentStateQuery = await this.db.select().from(appointments).where(eq(appointments.id, id)).execute();
       console.log(`📊 Current database state before update:`, {
-        id: currentStateQuery?.id,
-        status: currentStateQuery?.status,
-        payment_status: (currentStateQuery as any)?.payment_status,
-        updated_at: (currentStateQuery as any)?.updated_at
+        id: currentStateQuery[0]?.id,
+        status: currentStateQuery[0]?.status,
+        payment_status: (currentStateQuery[0] as any)?.payment_status,
+        updated_at: (currentStateQuery[0] as any)?.updated_at
       });
 
-      const result = db.update(appointments).set(updatedAppointment).where(eq(appointments.id, id)).run();
+      const result = await this.db.update(appointments).set(updatedAppointment).where(eq(appointments.id, id)).execute();
       console.log(`📊 Database update result:`, {
-        changes: result.changes,
-        lastInsertRowid: result.lastInsertRowid
+        rowCount: result.rowCount,
       });
 
-      if (result.changes === 0) {
+      if (result.rowCount === 0) {
         console.log(`❌ No rows were updated for appointment ${id} - this is unexpected!`);
         return undefined;
       }
 
-      // Verify the update worked
-      const verifyQuery = db.select().from(appointments).where(eq(appointments.id, id)).get();
+      const verifyQuery = await this.db.select().from(appointments).where(eq(appointments.id, id)).execute();
       console.log(`🔍 Verification query after update:`, {
-        id: verifyQuery?.id,
-        status: verifyQuery?.status,
-        payment_status: (verifyQuery as any)?.payment_status,
-        paid_at: (verifyQuery as any)?.paid_at,
-        updated_at: (verifyQuery as any)?.updated_at
+        id: verifyQuery[0]?.id,
+        status: verifyQuery[0]?.status,
+        payment_status: (verifyQuery[0] as any)?.payment_status,
+        paid_at: (verifyQuery[0] as any)?.paid_at,
+        updated_at: (verifyQuery[0] as any)?.updated_at
       });
 
       console.log(`✅ Successfully updated appointment ${id}`);
-      console.log(`=== END SQLiteStorage DEBUG ===\n`);
+      console.log(`=== END PostgreSQLStorage DEBUG ===\n`);
       return updatedAppointment;
     } catch (error) {
       console.error(`❌ Error updating appointment ${id} in database:`, error);
       console.error(`Error name: ${error.name}`);
       console.error(`Error message: ${error.message}`);
       console.error(`Error stack: ${error.stack}`);
-      console.log(`=== END SQLiteStorage ERROR ===\n`);
+      console.log(`=== END PostgreSQLStorage ERROR ===\n`);
       throw error;
     }
   }
 
   async rescheduleAppointment(id: string, newDate: string, newTime: string, reason: string): Promise<Appointment | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     console.log(`Rescheduling appointment ${id} to ${newDate} ${newTime}, reason: ${reason}`);
 
@@ -1234,7 +1200,6 @@ export class PostgreSQLStorage implements IStorage {
 
     console.log("Found existing appointment:", existingAppointment);
 
-    // Check if the employee is on day off for the new date
     if (existingAppointment.employeeId) {
       const isOnDayOff = await this.isEmployeeOnDayOff(existingAppointment.employeeId, newDate);
       if (isOnDayOff) {
@@ -1242,11 +1207,9 @@ export class PostgreSQLStorage implements IStorage {
       }
     }
 
-    // Validate new date and time - allow rescheduling to any future time
     const now = new Date();
     const newDateTime = new Date(`${newDate}T${newTime}`);
 
-    // Only validate that the new datetime is not in the past (same day is allowed)
     const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const newDateMidnight = new Date(newDateTime.getFullYear(), newDateTime.getMonth(), newDateTime.getDate());
 
@@ -1255,12 +1218,9 @@ export class PostgreSQLStorage implements IStorage {
       throw new Error("Não é possível reagendar para uma data no passado");
     }
 
-    // If it's today, allow any time (employees can reschedule within the same day)
-    // If it's a future date, allow any time
     console.log(`Rescheduling validation passed: ${newDate} ${newTime}`);
     console.log(`Current time: ${now.toISOString()}, New time: ${newDateTime.toISOString()}`)
 
-    // Calculate new end time based on service duration
     const service = await this.getService(existingAppointment.serviceId);
     let newEndTime = newTime;
     if (service) {
@@ -1273,7 +1233,6 @@ export class PostgreSQLStorage implements IStorage {
 
     console.log(`Service duration: ${service?.duration || 60} minutes, calculated end time: ${newEndTime}`);
 
-    // Check availability for new time slot (excluding the current appointment)
     if (existingAppointment.employeeId) {
       console.log("Checking availability for employee...");
       try {
@@ -1282,11 +1241,11 @@ export class PostgreSQLStorage implements IStorage {
           newDate,
           newTime,
           service?.duration || 60,
-          id // Exclude the current appointment from conflict check
+          id
         );
       } catch (error) {
         console.log("Employee is not available for the new time slot:", error.message);
-        throw error; // Re-throw the specific error message
+        throw error;
       }
       console.log("Employee is available for the new time slot");
     } else {
@@ -1299,12 +1258,12 @@ export class PostgreSQLStorage implements IStorage {
       appointmentTime: newTime,
       endTime: newEndTime,
       rescheduleReason: reason,
-      status: "pending", // Reset to pending after reschedule
+      status: "pending",
       updatedAt: new Date(),
     };
 
     console.log("Updating appointment in database...");
-    db.update(appointments).set(updatedAppointment).where(eq(appointments.id, id)).run();
+    await this.db.update(appointments).set(updatedAppointment).where(eq(appointments.id, id)).execute();
     console.log("Appointment rescheduled successfully");
 
     return updatedAppointment;
@@ -1312,11 +1271,10 @@ export class PostgreSQLStorage implements IStorage {
 
 
   async cancelAppointment(id: string, reason: string): Promise<Appointment | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const existingAppointment = await this.getAppointment(id);
     if (!existingAppointment) return undefined;
 
-    // Allow cancellation - fee calculation is handled in the route handler
     const updatedAppointment: Appointment = {
       ...existingAppointment,
       status: "cancelled",
@@ -1324,30 +1282,26 @@ export class PostgreSQLStorage implements IStorage {
       updatedAt: new Date(),
     };
 
-    db.update(appointments).set(updatedAppointment).where(eq(appointments.id, id)).run();
+    await this.db.update(appointments).set(updatedAppointment).where(eq(appointments.id, id)).execute();
     return updatedAppointment;
   }
 
   async checkEmployeeAvailability(availability: AvailabilityData): Promise<boolean> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
-    // Check if employee is on day off
     const isOnDayOff = await this.isEmployeeOnDayOff(availability.employeeId, availability.date);
     if (isOnDayOff) return false;
 
     const employee = await this.getEmployee(availability.employeeId);
     if (!employee || !employee.isActive) return false;
 
-    // Check if employee works on this day
     const workDays = JSON.parse(employee.workDays);
-    // Parse date correctly to avoid timezone issues
     const [year, month, day] = availability.date.split('-').map(Number);
     const requestDate = new Date(year, month - 1, day);
     const dayOfWeek = requestDate.getDay();
 
     if (!workDays.includes(dayOfWeek)) return false;
 
-    // Check if time is within working hours
     const requestStartTime = availability.startTime;
     const [startHour, startMinute] = requestStartTime.split(':').map(Number);
     const requestEndMinute = startMinute + availability.duration;
@@ -1359,19 +1313,16 @@ export class PostgreSQLStorage implements IStorage {
       return false;
     }
 
-    // Check if time conflicts with break time
     if (employee.breakStartTime && employee.breakEndTime) {
       if (!(requestEndTime <= employee.breakStartTime || requestStartTime >= employee.breakEndTime)) {
         return false;
       }
     }
 
-    // Check for existing appointments conflicts
     const existingAppointments = await this.getAppointmentsByEmployee(availability.employeeId, availability.date);
     for (const apt of existingAppointments) {
       if (apt.status === "cancelled" || apt.status === "completed" || apt.status === "no_show") continue;
 
-      // Check for time overlap
       if (!(requestEndTime <= apt.appointmentTime || requestStartTime >= apt.endTime)) {
         return false;
       }
@@ -1387,11 +1338,10 @@ export class PostgreSQLStorage implements IStorage {
     duration: number,
     excludeAppointmentId: string
   ): Promise<boolean> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     console.log(`Checking availability for reschedule - Employee: ${employeeId}, Date: ${date}, Time: ${startTime}, Duration: ${duration}, Exclude: ${excludeAppointmentId}`);
 
-    // Check if employee is on day off for the requested date
     const isOnDayOff = await this.isEmployeeOnDayOff(employeeId, date);
     if (isOnDayOff) {
       const dayNames = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
@@ -1406,9 +1356,7 @@ export class PostgreSQLStorage implements IStorage {
       return false;
     }
 
-    // Check if employee works on this day
     const workDays = JSON.parse(employee.workDays);
-    // Parse date correctly to avoid timezone issues
     const [year, month, day] = date.split('-').map(Number);
     const requestDate = new Date(year, month - 1, day);
     const dayOfWeek = requestDate.getDay();
@@ -1420,7 +1368,6 @@ export class PostgreSQLStorage implements IStorage {
       throw new Error(`O funcionário não trabalha às ${dayNames[dayOfWeek]}s. Por favor, escolha outro dia.`);
     }
 
-    // Check if time is within working hours
     const requestStartTime = startTime;
     const [startHour, startMinute] = requestStartTime.split(':').map(Number);
     const requestEndMinute = startMinute + duration;
@@ -1436,7 +1383,6 @@ export class PostgreSQLStorage implements IStorage {
       throw new Error(`O horário solicitado (${requestStartTime} - ${requestEndTime}) está fora do horário de trabalho do funcionário (${employee.startTime} - ${employee.endTime}).`);
     }
 
-    // Check if time conflicts with break time
     if (employee.breakStartTime && employee.breakEndTime) {
       if (!(requestEndTime <= employee.breakStartTime || requestStartTime >= employee.breakEndTime)) {
         console.log("Time conflicts with break time");
@@ -1444,7 +1390,6 @@ export class PostgreSQLStorage implements IStorage {
       }
     }
 
-    // Check for existing appointments conflicts (excluding the appointment being rescheduled)
     const existingAppointments = await this.getAppointmentsByEmployee(employeeId, date);
     console.log(`Found ${existingAppointments.length} existing appointments for employee on ${date}`);
 
@@ -1461,7 +1406,6 @@ export class PostgreSQLStorage implements IStorage {
         continue;
       }
 
-      // Check for time overlap
       const hasOverlap = !(requestEndTime <= apt.appointmentTime || requestStartTime >= apt.endTime);
       console.log(`Overlap check: requested ${requestStartTime}-${requestEndTime} vs existing ${apt.appointmentTime}-${apt.endTime} = ${hasOverlap ? 'CONFLICT' : 'OK'}`);
 
@@ -1476,18 +1420,15 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async getEmployeeAvailableSlots(employeeId: string, date: string, serviceDuration: number): Promise<string[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
-    // Check if employee is on day off
     const isOnDayOff = await this.isEmployeeOnDayOff(employeeId, date);
     if (isOnDayOff) return [];
 
     const employee = await this.getEmployee(employeeId);
     if (!employee || !employee.isActive) return [];
 
-    // Check if employee works on this day
     const workDays = JSON.parse(employee.workDays);
-    // Parse date correctly to avoid timezone issues
     const [year, month, day] = date.split('-').map(Number);
     const requestDate = new Date(year, month - 1, day);
     const dayOfWeek = requestDate.getDay();
@@ -1506,7 +1447,6 @@ export class PostgreSQLStorage implements IStorage {
     while (currentHour < endHour || (currentHour === endHour && currentMinute <= endMinute - serviceDuration)) {
       const currentTime = `${currentHour.toString().padStart(2, '0')}:${currentMinute.toString().padStart(2, '0')}`;
 
-      // Check availability for this slot
       const availability = {
         employeeId,
         date,
@@ -1519,7 +1459,6 @@ export class PostgreSQLStorage implements IStorage {
         slots.push(currentTime);
       }
 
-      // Move to next 30-minute slot
       currentMinute += 30;
       if (currentMinute >= 60) {
         currentMinute = 0;
@@ -1531,7 +1470,7 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async getEmployeeSchedule(employeeId: string): Promise<{ workDays: number[], startTime: string, endTime: string, breakStartTime?: string, breakEndTime?: string }> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const employee = await this.getEmployee(employeeId);
     if (!employee) {
       throw new Error("Employee not found");
@@ -1547,7 +1486,7 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async updateEmployeeSchedule(employeeId: string, schedule: Partial<{ workDays: string, startTime: string, endTime: string, breakStartTime?: string, breakEndTime?: string }>): Promise<Employee | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const existingEmployee = await this.getEmployee(employeeId);
     if (!existingEmployee) return undefined;
 
@@ -1557,12 +1496,12 @@ export class PostgreSQLStorage implements IStorage {
       updatedAt: new Date(),
     };
 
-    db.update(employees).set(updatedEmployee).where(eq(employees.id, employeeId)).run();
+    await this.db.update(employees).set(updatedEmployee).where(eq(employees.id, employeeId)).execute();
     return updatedEmployee;
   }
 
   async canCancelAppointment(appointmentId: string): Promise<{ canCancel: boolean, reason?: string }> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const appointment = await this.getAppointment(appointmentId);
     if (!appointment) {
       return { canCancel: false, reason: "Appointment not found" };
@@ -1576,28 +1515,24 @@ export class PostgreSQLStorage implements IStorage {
       return { canCancel: false, reason: "Cannot cancel a completed appointment" };
     }
 
-    // Always allow cancellation - the fee will be calculated based on merchant policies
-    // The frontend and backend will handle fee calculation appropriately
     return { canCancel: true };
   }
 
   async canRescheduleAppointment(id: string, userRole?: string): Promise<{ canReschedule: boolean; reason?: string }> {
+    if (!this.initialized) await this.initialize();
     const appointment = await this.getAppointment(id);
     if (!appointment) {
       return { canReschedule: false, reason: "Agendamento não encontrado" };
     }
 
-    // Verificar se o agendamento está em um status que permite reagendamento
     if (appointment.status === "completed" || appointment.status === "cancelled" || appointment.status === "no_show") {
       return { canReschedule: false, reason: "Agendamento já foi finalizado ou cancelado" };
     }
 
-    // Funcionários e merchants podem reagendar a qualquer momento
     if (userRole === "employee" || userRole === "merchant") {
       return { canReschedule: true };
     }
 
-    // Para clientes, aplicar política de 24 horas
     if (userRole === "client") {
       const now = new Date();
       const appointmentDateTime = new Date(`${appointment.appointmentDate}T${appointment.appointmentTime}`);
@@ -1609,7 +1544,6 @@ export class PostgreSQLStorage implements IStorage {
       }
     }
 
-    // Verificar se o status permite reagendamento
     if (["pending", "confirmed", "scheduled"].includes(appointment.status)) {
       return { canReschedule: true };
     }
@@ -1640,7 +1574,6 @@ export class PostgreSQLStorage implements IStorage {
           }
           break;
         case "none":
-          // No restriction
           break;
       }
 
@@ -1648,7 +1581,7 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async markAppointmentAsLate(appointmentId: string): Promise<Appointment | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const existingAppointment = await this.getAppointment(appointmentId);
     if (!existingAppointment) return undefined;
 
@@ -1658,12 +1591,12 @@ export class PostgreSQLStorage implements IStorage {
       updatedAt: new Date(),
     };
 
-    db.update(appointments).set(updatedAppointment).where(eq(appointments.id, appointmentId)).run();
+    await this.db.update(appointments).set(updatedAppointment).where(eq(appointments.id, appointmentId)).execute();
     return updatedAppointment;
   }
 
   async markAppointmentAsNoShow(appointmentId: string): Promise<Appointment | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const existingAppointment = await this.getAppointment(appointmentId);
     if (!existingAppointment) return undefined;
 
@@ -1673,14 +1606,13 @@ export class PostgreSQLStorage implements IStorage {
       updatedAt: new Date(),
     };
 
-    db.update(appointments).set(updatedAppointment).where(eq(appointments.id, appointmentId)).run();
+    await this.db.update(appointments).set(updatedAppointment).where(eq(appointments.id, appointmentId)).execute();
     return updatedAppointment;
   }
 
-  // Get appointments with pending payments
   async getPendingPaymentAppointments(merchantId: string): Promise<Appointment[]> {
-    await this.initialize();
-    return db.select({
+    if (!this.initialized) await this.initialize();
+    return this.db.select({
       id: appointments.id,
       merchantId: appointments.merchantId,
       serviceId: appointments.serviceId,
@@ -1725,11 +1657,10 @@ export class PostgreSQLStorage implements IStorage {
       .execute() as Appointment[];
   }
 
-  // New methods for historical appointments with filters
   async getAppointmentsByEmployeeAndDate(employeeId: string, date: string): Promise<Appointment[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
-    const appointmentsList = db.select().from(appointments)
+    const appointmentsList = this.db.select().from(appointments)
       .where(and(
         eq(appointments.employeeId, employeeId),
         eq(appointments.appointmentDate, date)
@@ -1740,13 +1671,12 @@ export class PostgreSQLStorage implements IStorage {
     return appointmentsList;
   }
 
-  // Get employee upcoming appointments (future dates with pending/confirmed status)
   async getEmployeeUpcomingAppointments(employeeId: string): Promise<Appointment[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     const today = new Date().toISOString().split('T')[0];
 
-    const upcomingAppointments = db.select().from(appointments)
+    const upcomingAppointments = this.db.select().from(appointments)
       .where(and(
         eq(appointments.employeeId, employeeId),
         sql`${appointments.appointmentDate} >= ${today}`,
@@ -1758,13 +1688,11 @@ export class PostgreSQLStorage implements IStorage {
     return upcomingAppointments;
   }
 
-  // Get employee historical appointments
   async getEmployeeHistoricalAppointments(employeeId: string, filter: string = "month"): Promise<any[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
-    // Use Brazil timezone (UTC-3) for date calculations
     const now = new Date();
-    const brazilOffset = -3 * 60; // UTC-3 in minutes
+    const brazilOffset = -3 * 60;
     const brazilTime = new Date(now.getTime() + (brazilOffset * 60 * 1000));
 
     let startDate: string;
@@ -1787,7 +1715,7 @@ export class PostgreSQLStorage implements IStorage {
         startDate = defaultAgo.toISOString().split('T')[0];
     }
 
-    const appointmentRecords = await db
+    const appointmentRecords = await this.db
       .select()
       .from(appointments)
       .where(
@@ -1800,25 +1728,19 @@ export class PostgreSQLStorage implements IStorage {
       )
       .orderBy(desc(appointments.appointmentDate), desc(appointments.appointmentTime));
 
-    // Get employee payment info
     const employee = await this.getEmployee(employeeId);
 
-    // Enrich with service and client information
     const enrichedAppointments = await Promise.all(
       appointmentRecords.map(async (appointment) => {
         const service = await this.getService(appointment.serviceId);
 
         let employeeEarning = 0;
-        // Calcular ganhos apenas para serviços concluídos
         if (appointment.status === "completed" && employee && employee.paymentType === "percentage") {
-          // Calculate percentage of service price only for completed services
-          const percentage = employee.paymentValue / 100; // paymentValue is stored as percentage * 100
+          const percentage = employee.paymentValue / 100;
           employeeEarning = service?.price ? Math.round((service.price * percentage) / 100) : 0;
         } else if (appointment.status === "completed" && employee && employee.paymentType === "fixed") {
-          // For fixed payment type, only count if service was completed
           employeeEarning = employee.paymentValue;
         }
-        // Para serviços não concluídos (cancelados, não compareceu, etc), employeeEarning permanece 0
 
         return {
           ...appointment,
@@ -1834,20 +1756,18 @@ export class PostgreSQLStorage implements IStorage {
     return enrichedAppointments;
   }
 
-  // Calculate employee total earnings for a period
   async calculateEmployeeEarnings(employeeId: string, startDate: string, endDate: string): Promise<number> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const employee = await this.getEmployee(employeeId);
     if (!employee) return 0;
 
-    // Buscar apenas agendamentos concluídos (status = "completed")
-    const completedAppointmentRecords = await db
+    const completedAppointmentRecords = await this.db
       .select()
       .from(appointments)
       .where(
         and(
           eq(appointments.employeeId, employeeId),
-          eq(appointments.status, "completed"), // Apenas serviços concluídos
+          eq(appointments.status, "completed"),
           gte(appointments.appointmentDate, startDate),
           lte(appointments.appointmentDate, endDate)
         )
@@ -1857,7 +1777,6 @@ export class PostgreSQLStorage implements IStorage {
       let totalEarnings = 0;
       const percentage = employee.paymentValue / 100;
 
-      // Calcular ganhos apenas para serviços concluídos
       for (const appointment of completedAppointmentRecords) {
         const service = await this.getService(appointment.serviceId);
         if (service) {
@@ -1866,19 +1785,17 @@ export class PostgreSQLStorage implements IStorage {
       }
       return totalEarnings;
     } else if (employee.paymentType === "fixed") {
-      // Para salário fixo, considera apenas se houve algum serviço concluído no período
-      // Se não houve serviços concluídos, não há ganhos
       if (completedAppointmentRecords.length > 0) {
         return employee.paymentValue;
       }
       return 0;
     }
 
-    return 0; // Default for monthly or other types not explicitly handled
+    return 0;
   }
 
   async extendWorkingHours(employeeId: string, newEndTime: string): Promise<Employee | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const employee = await this.getEmployee(employeeId);
     if (!employee) return undefined;
 
@@ -1888,7 +1805,7 @@ export class PostgreSQLStorage implements IStorage {
       updatedAt: new Date(),
     };
 
-    db.update(employees).set(updatedEmployee).where(eq(employees.id, employeeId)).run();
+    await this.db.update(employees).set(updatedEmployee).where(eq(employees.id, employeeId)).execute();
     return updatedEmployee;
   }
 
@@ -1896,14 +1813,13 @@ export class PostgreSQLStorage implements IStorage {
     employee: Employee;
     overtimeMinutes: number;
   }> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     const employee = await this.getEmployee(employeeId);
     if (!employee) {
       throw new Error("Funcionário não encontrado");
     }
 
-    // Calculate overtime
     const [actualHour, actualMinute] = actualEndTime.split(':').map(Number);
     const [originalHour, originalMinute] = employee.endTime.split(':').map(Number);
 
@@ -1912,27 +1828,26 @@ export class PostgreSQLStorage implements IStorage {
 
     const overtimeMinutes = Math.max(0, actualTimeMinutes - originalTimeMinutes);
 
-    // Update employee with accumulated overtime
     const currentOvertimeHours = employee.overtimeHours || 0;
     const totalOvertimeMinutes = currentOvertimeHours + overtimeMinutes;
     const today = new Date().toISOString().split('T')[0];
 
-    const updatedEmployee = db.update(employees)
+    const updatedEmployee = await this.db.update(employees)
       .set({
         overtimeHours: totalOvertimeMinutes,
         lastOvertimeDate: today,
-        extendedEndTime: null // Reset extended end time
+        extendedEndTime: null
       })
       .where(eq(employees.id, employeeId))
       .returning()
-      .get();
+      .execute();
 
-    if (!updatedEmployee) {
+    if (!updatedEmployee || updatedEmployee.length === 0) {
       throw new Error("Erro ao atualizar funcionário");
     }
 
     return {
-      employee: updatedEmployee,
+      employee: updatedEmployee[0],
       overtimeMinutes
     };
   }
@@ -1942,7 +1857,7 @@ export class PostgreSQLStorage implements IStorage {
     totalOvertimeHours: number;
     lastOvertimeDate: string | null;
   }> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const employee = await this.getEmployee(employeeId);
     if (!employee) {
       return {
@@ -1952,8 +1867,6 @@ export class PostgreSQLStorage implements IStorage {
       };
     }
 
-    // For simplicity, returning total accumulated overtime
-    // In a more complex system, you'd track overtime per day/period
     const totalMinutes = employee.overtimeHours || 0;
     const totalHours = Math.floor(totalMinutes / 60);
     const remainingMinutes = totalMinutes % 60;
@@ -1967,11 +1880,10 @@ export class PostgreSQLStorage implements IStorage {
 
 
   async getClientHistoricalAppointments(clientId: string, filter: string): Promise<any[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     const now = new Date();
-    // Use Brazil timezone (UTC-3) for date calculations
-    const brazilOffset = -3 * 60; // UTC-3 in minutes
+    const brazilOffset = -3 * 60;
     const brazilTime = new Date(now.getTime() + (brazilOffset * 60 * 1000));
 
     let startDate: string;
@@ -1994,7 +1906,7 @@ export class PostgreSQLStorage implements IStorage {
         startDate = defaultAgo.toISOString().split('T')[0];
     }
 
-    const appointmentRecords = await db
+    const appointmentRecords = await this.db
       .select({
         id: appointments.id,
         merchantId: appointments.merchantId,
@@ -2043,11 +1955,10 @@ export class PostgreSQLStorage implements IStorage {
 
   // Employee days off methods
   async createEmployeeDayOff(data: InsertEmployeeDayOff): Promise<EmployeeDayOff> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     console.log("Storage: Creating employee day off with data:", data);
 
-    // Validate that employee exists and belongs to merchant
     const employee = await this.getEmployee(data.employeeId);
     if (!employee) {
       throw new Error("Funcionário não encontrado");
@@ -2057,7 +1968,6 @@ export class PostgreSQLStorage implements IStorage {
       throw new Error("Funcionário não pertence a este salão");
     }
 
-    // Check for existing day off
     const existing = await this.getEmployeeDaysOff(data.merchantId, data.employeeId, data.date);
     if (existing.length > 0) {
       throw new Error("Este funcionário já possui folga registrada para esta data");
@@ -2072,9 +1982,9 @@ export class PostgreSQLStorage implements IStorage {
     console.log("Storage: Inserting day off:", dayOff);
 
     try {
-      const result = db.insert(employeeDaysOff).values(dayOff).returning().get();
+      const result = await this.db.insert(employeeDaysOff).values(dayOff).returning().execute();
       console.log("Storage: Day off created successfully:", result);
-      return result;
+      return result[0];
     } catch (error) {
       console.error("Storage: Error inserting day off:", error);
       throw new Error("Erro ao salvar folga no banco de dados");
@@ -2082,7 +1992,7 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async getEmployeeDaysOff(merchantId: string, employeeId?: string, date?: string): Promise<EmployeeDayOff[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     console.log("Storage: Getting employee days off for merchant:", merchantId, "employee:", employeeId, "date:", date);
 
@@ -2096,41 +2006,41 @@ export class PostgreSQLStorage implements IStorage {
       conditions.push(eq(employeeDaysOff.date, date));
     }
 
-    const result = db.select().from(employeeDaysOff).where(and(...conditions)).execute();
+    const result = await this.db.select().from(employeeDaysOff).where(and(...conditions)).execute();
     console.log("Storage: Found", result.length, "employee days off records");
 
     return result;
   }
 
   async updateEmployeeDayOff(id: string, updates: Partial<InsertEmployeeDayOff>): Promise<EmployeeDayOff | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     console.log("Storage: Updating employee day off:", id, updates);
 
-    const existing = db.select().from(employeeDaysOff).where(eq(employeeDaysOff.id, id)).get();
-    if (!existing) {
+    const existing = await this.db.select().from(employeeDaysOff).where(eq(employeeDaysOff.id, id)).execute();
+    if (!existing || existing.length === 0) {
       console.log("Storage: Day off not found:", id);
       return undefined;
     }
 
-    console.log("Storage: Found existing day off:", existing);
+    console.log("Storage: Found existing day off:", existing[0]);
 
     const updatedDayOff = {
-      ...existing,
+      ...existing[0],
       ...updates,
     };
 
     console.log("Storage: Updating with data:", updatedDayOff);
 
     try {
-      const result = db.update(employeeDaysOff)
+      const result = await this.db.update(employeeDaysOff)
         .set(updatedDayOff)
         .where(eq(employeeDaysOff.id, id))
         .returning()
-        .get();
+        .execute();
 
       console.log("Storage: Day off updated successfully:", result);
-      return result;
+      return result[0];
     } catch (error) {
       console.error("Storage: Error updating day off:", error);
       throw new Error("Erro ao atualizar folga no banco de dados");
@@ -2138,24 +2048,24 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async deleteEmployeeDayOff(id: string): Promise<boolean> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
-    const result = db.delete(employeeDaysOff).where(eq(employeeDaysOff.id, id)).run();
-    return result.changes > 0;
+    const result = await this.db.delete(employeeDaysOff).where(eq(employeeDaysOff.id, id)).execute();
+    return result.rowCount > 0;
   }
 
   async isEmployeeOnDayOff(employeeId: string, date: string): Promise<boolean> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
-    const dayOff = db.select()
+    const dayOff = await this.db.select()
       .from(employeeDaysOff)
       .where(and(
         eq(employeeDaysOff.employeeId, employeeId),
         eq(employeeDaysOff.date, date)
       ))
-      .get();
+      .execute();
 
-    return !!dayOff;
+    return dayOff.length > 0;
   }
 
   // Penalty methods
@@ -2171,7 +2081,7 @@ export class PostgreSQLStorage implements IStorage {
     reason: string;
     status: string;
   }): Promise<any> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     const newPenalty = {
       id: randomUUID(),
@@ -2189,14 +2099,14 @@ export class PostgreSQLStorage implements IStorage {
       updatedAt: new Date(),
     };
 
-    const result = db.insert(penalties).values(newPenalty).returning().get();
-    return result;
+    const result = await this.db.insert(penalties).values(newPenalty).returning().execute();
+    return result[0];
   }
 
   async getPenaltiesByMerchant(merchantId: string): Promise<any[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
-    const penaltiesList = db.select({
+    const penaltiesList = await this.db.select({
       id: penalties.id,
       merchantId: penalties.merchantId,
       clientId: penalties.clientId,
@@ -2229,9 +2139,9 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async getPenaltiesByClient(clientId: string): Promise<any[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
-    const penaltiesList = db.select().from(penalties)
+    const penaltiesList = await this.db.select().from(penalties)
       .where(eq(penalties.clientId, clientId))
       .orderBy(desc(penalties.createdAt))
       .execute();
@@ -2240,7 +2150,7 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async updatePenaltyStatus(id: string, status: string, paidBy: string): Promise<any | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     console.log(`🔄 Updating penalty ${id} to status: ${status}`);
 
@@ -2258,15 +2168,15 @@ export class PostgreSQLStorage implements IStorage {
     }
 
     try {
-      const result = db.update(penalties)
+      const result = await this.db.update(penalties)
         .set(updates)
         .where(eq(penalties.id, id))
         .returning()
-        .get();
+        .execute();
 
       console.log(`✅ Penalty ${id} updated successfully:`, result);
       console.log(`📢 Penalty status changed from pending to ${status} - will no longer appear in client dashboard`);
-      return result;
+      return result[0];
     } catch (error) {
       console.error(`❌ Error updating penalty ${id}:`, error);
       throw error;
@@ -2275,7 +2185,7 @@ export class PostgreSQLStorage implements IStorage {
 
   // Promotion methods
   async createPromotion(insertPromotion: InsertPromotion): Promise<Promotion> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     const id = randomUUID();
     const now = new Date();
@@ -2287,14 +2197,14 @@ export class PostgreSQLStorage implements IStorage {
       updatedAt: now,
     };
 
-    db.insert(promotions).values(promotion).run();
+    await this.db.insert(promotions).values(promotion).execute();
     return promotion;
   }
 
   async getPromotionsByMerchant(merchantId: string): Promise<any[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
-    const promotionsList = db.select({
+    const promotionsList = await this.db.select({
       id: promotions.id,
       merchantId: promotions.merchantId,
       serviceId: promotions.serviceId,
@@ -2319,11 +2229,11 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async getActivePromotionsByMerchant(merchantId: string): Promise<any[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     const today = new Date().toISOString().split('T')[0];
 
-    const activePromotions = db.select({
+    const activePromotions = await this.db.select({
       id: promotions.id,
       merchantId: promotions.merchantId,
       serviceId: promotions.serviceId,
@@ -2353,13 +2263,13 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async getPromotion(id: string): Promise<Promotion | undefined> {
-    await this.initialize();
-    const promotion = db.select().from(promotions).where(eq(promotions.id, id)).get();
-    return promotion || undefined;
+    if (!this.initialized) await this.initialize();
+    const promotion = await this.db.select().from(promotions).where(eq(promotions.id, id)).execute();
+    return promotion[0] || undefined;
   }
 
   async updatePromotion(id: string, updates: Partial<InsertPromotion>): Promise<Promotion | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
     const existingPromotion = await this.getPromotion(id);
     if (!existingPromotion) return undefined;
 
@@ -2369,22 +2279,22 @@ export class PostgreSQLStorage implements IStorage {
       updatedAt: new Date(),
     };
 
-    db.update(promotions).set(updatedPromotion).where(eq(promotions.id, id)).run();
+    await this.db.update(promotions).set(updatedPromotion).where(eq(promotions.id, id)).execute();
     return updatedPromotion;
   }
 
   async deletePromotion(id: string): Promise<boolean> {
-    await this.initialize();
-    const result = db.delete(promotions).where(eq(promotions.id, id)).run();
-    return result.changes > 0;
+    if (!this.initialized) await this.initialize();
+    const result = await this.db.delete(promotions).where(eq(promotions.id, id)).execute();
+    return result.rowCount > 0;
   }
 
   async getPromotionByService(serviceId: string): Promise<any | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     const today = new Date().toISOString().split('T')[0];
 
-    const promotion = db.select({
+    const promotion = await this.db.select({
       id: promotions.id,
       merchantId: promotions.merchantId,
       serviceId: promotions.serviceId,
@@ -2404,9 +2314,9 @@ export class PostgreSQLStorage implements IStorage {
         lte(promotions.startDate, today),
         gte(promotions.endDate, today)
       ))
-      .get();
+      .execute();
 
-    return promotion || undefined;
+    return promotion[0] || undefined;
   }
 
   async calculatePromotionalPrice(serviceId: string, originalPrice: number): Promise<{ hasPromotion: boolean; originalPrice: number; promotionalPrice: number; discount: any }> {
@@ -2440,7 +2350,7 @@ export class PostgreSQLStorage implements IStorage {
 
   // Merchant access management methods
   async grantMerchantAccess(merchantId: string, durationDays: number, monthlyFee?: number): Promise<Merchant | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     const now = new Date();
     const accessEndDate = new Date(now);
@@ -2465,7 +2375,7 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async suspendMerchantAccess(merchantId: string): Promise<Merchant | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     const updates = {
       status: "payment_pending",
@@ -2477,7 +2387,7 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async renewMerchantAccess(merchantId: string): Promise<Merchant | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     const existingMerchant = await this.getMerchant(merchantId);
     if (!existingMerchant) return undefined;
@@ -2508,11 +2418,10 @@ export class PostgreSQLStorage implements IStorage {
     monthlyFee?: number;
     paymentStatus?: string;
   }): Promise<Merchant | undefined> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     const updates = { ...settings };
 
-    // If duration is being updated and merchant has active access, update end date
     if (settings.accessDurationDays) {
       const existingMerchant = await this.getMerchant(merchantId);
       if (existingMerchant && existingMerchant.accessStartDate) {
@@ -2531,7 +2440,7 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async getMerchantsWithExpiredAccess(): Promise<Merchant[]> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     const allMerchants = await this.getAllMerchants();
     const now = new Date();
@@ -2543,7 +2452,7 @@ export class PostgreSQLStorage implements IStorage {
   }
 
   async processExpiredAccess(): Promise<number> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     const expiredMerchants = await this.getMerchantsWithExpiredAccess();
     let processedCount = 0;
@@ -2570,11 +2479,11 @@ export class PostgreSQLStorage implements IStorage {
     expiringSoon: number;
     totalRevenue: number;
   }> {
-    await this.initialize();
+    if (!this.initialized) await this.initialize();
 
     const allMerchants = await this.getAllMerchants();
     const now = new Date();
-    const soonThreshold = new Date(now.getTime() + (7 * 24 * 60 * 60 * 1000)); // 7 days from now
+    const soonThreshold = new Date(now.getTime() + (7 * 24 * 60 * 60 * 1000));
 
     let active = 0;
     let expired = 0;
@@ -2585,17 +2494,16 @@ export class PostgreSQLStorage implements IStorage {
       if (merchant.status === "active") {
         if (merchant.accessEndDate && new Date(merchant.accessEndDate) > now) {
           active++;
-          // Check if expiring soon
           if (new Date(merchant.accessEndDate) <= soonThreshold) {
             expiringSoon++;
           }
         } else if (merchant.accessEndDate && new Date(merchant.accessEndDate) <= now) {
           expired++;
-        } else { // No access end date means unlimited access
+        } else {
           active++;
         }
       } else if (merchant.status === "payment_pending") {
-        expired++; // Treat payment_pending as expired for this status count
+        expired++;
       }
 
       if (merchant.lastPaymentDate && merchant.monthlyFee) {
@@ -2609,5 +2517,66 @@ export class PostgreSQLStorage implements IStorage {
       expiringSoon,
       totalRevenue
     };
+  }
+
+  // System Settings methods
+  async getSystemSetting(key: string): Promise<SystemSetting | null> {
+    if (!this.initialized) await this.initialize();
+    try {
+      const setting = await this.db.select().from(systemSettings).where(eq(systemSettings.key, key)).execute();
+      return setting[0] || null;
+    } catch (error) {
+      console.error("Error getting system setting:", error);
+      throw error;
+    }
+  }
+
+  async updateSystemSetting(key: string, value: string): Promise<SystemSetting | null> {
+    if (!this.initialized) await this.initialize();
+    try {
+      await this.db.update(systemSettings).set({ value: value, updatedAt: new Date() }).where(eq(systemSettings.key, key)).execute();
+      return this.getSystemSetting(key);
+    } catch (error) {
+      console.error("Error updating system setting:", error);
+      throw error;
+    }
+  }
+
+  async getAllSystemSettings(): Promise<SystemSetting[]> {
+    if (!this.initialized) await this.initialize();
+    try {
+      const settings = await this.db.select().from(systemSettings).orderBy(systemSettings.key).execute();
+      return settings;
+    } catch (error) {
+      console.error("Error getting all system settings:", error);
+      throw error;
+    }
+  }
+
+  async createSystemSetting(data: {
+    key: string;
+    value: string;
+    description?: string;
+    type?: string;
+  }): Promise<SystemSetting> {
+    if (!this.initialized) await this.initialize();
+    try {
+      const now = new Date();
+      const newSetting: SystemSetting = {
+        id: randomUUID(),
+        key: data.key,
+        value: data.value,
+        description: data.description || null,
+        type: data.type || 'string',
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      await this.db.insert(systemSettings).values(newSetting).execute();
+      return newSetting;
+    } catch (error) {
+      console.error("Error creating system setting:", error);
+      throw error;
+    }
   }
 }

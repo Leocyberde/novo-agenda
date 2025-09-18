@@ -1,4 +1,4 @@
-import { BarChart3, Home, Store, ChevronLeft, ChevronRight, DollarSign, Users } from "lucide-react";
+import { BarChart3, Home, Store, ChevronLeft, ChevronRight, DollarSign, Users, Settings } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useState } from "react";
 
@@ -27,13 +27,18 @@ export default function Sidebar() {
       icon: Users,
       label: "Acesso dos Comerciantes",
     },
+    {
+      href: "/admin-settings",
+      icon: Settings,
+      label: "Configurações",
+    },
   ];
 
   return (
-    <aside 
+    <aside
       className={`bg-card border-r border-border h-screen sticky top-0 transition-all duration-300 ${
         isMinimized ? "w-16" : "w-64"
-      }`} 
+      }`}
       data-testid="sidebar"
     >
       <div className="p-4">

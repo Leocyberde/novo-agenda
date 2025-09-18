@@ -6,6 +6,7 @@ import { Calendar, Clock, Users, User, UserCheck, Phone, Mail, DollarSign, Stick
 import { authService } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { useToast } from "@/hooks/use-toast";
 import ChangePasswordForm from "@/components/auth/change-password-form";
 
 
@@ -561,9 +562,10 @@ export default function MerchantDashboard() {
               ) : (
                 <div className="space-y-4">
                   <div>
-                    <p className="text-sm font-medium text-foreground">
-                      Status do Plano: <Badge variant={planStatus === 'vip' ? 'outline' : 'secondary'}>{planStatus === 'vip' ? 'VIP' : 'Grátis'}</Badge>
-                    </p>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-foreground">Status do Plano:</span>
+                      <Badge variant={planStatus === 'vip' ? 'outline' : 'secondary'}>{planStatus === 'vip' ? 'VIP' : 'Grátis'}</Badge>
+                    </div>
                     {planValidity && (
                       <p className="text-sm text-muted-foreground mt-1">
                         Validade: {new Date(planValidity).toLocaleDateString('pt-BR')}

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,7 +25,27 @@ export default function MerchantSignupForm({ onBack }: MerchantSignupFormProps) 
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
+  const [vipPrice, setVipPrice] = useState("50,00"); // Default value
+  // Removed isRedirecting state that was blocking the redirect
   const [step, setStep] = useState<"info" | "plan" | "payment">("info");
+
+  // Fetch VIP price from system settings
+  useEffect(() => {
+    const fetchVipPrice = async () => {
+      try {
+        const response = await fetch('/api/admin/system-settings/vip_plan_price');
+        if (response.ok) {
+          const setting = await response.json();
+          const priceInReais = (parseInt(setting.value) / 100).toFixed(2).replace('.', ',');
+          setVipPrice(priceInReais);
+        }
+      } catch (error) {
+        console.log("Could not fetch VIP price, using default");
+      }
+    };
+
+    fetchVipPrice();
+  }, []);
 
   const {
     register,
@@ -66,6 +86,7 @@ export default function MerchantSignupForm({ onBack }: MerchantSignupFormProps) 
     setIsLoading(true);
     try {
       const formData = watch();
+      console.log("Starting merchant registration for:", formData.email);
       
       // Call the merchant registration API endpoint
       const response = await fetch('/api/merchants/register', {
@@ -76,7 +97,11 @@ export default function MerchantSignupForm({ onBack }: MerchantSignupFormProps) 
         body: JSON.stringify(formData),
       });
 
+      console.log("Registration response status:", response.status);
+
       if (response.ok) {
+        console.log("Merchant registration successful, showing toast and redirecting...");
+        
         toast({
           title: "Cadastro realizado com sucesso!",
           description: selectedPlan === "trial" 
@@ -84,10 +109,24 @@ export default function MerchantSignupForm({ onBack }: MerchantSignupFormProps) 
             : "Conta criada! Aguarde a confirmação do pagamento. Redirecionando para o login...",
         });
         
-        // Redirecionar imediatamente após sucesso
-        setLocation("/login");
+        // Use setTimeout to ensure the toast is shown before redirect
+        setTimeout(() => {
+          console.log("About to redirect to /login with automatic page refresh");
+          
+          // Force navigation to login page with page refresh
+          // This ensures the page state is completely reset
+          window.location.replace("/login");
+          
+          // Fallback in case replace doesn't work
+          setTimeout(() => {
+            console.log("Using href fallback");
+            window.location.href = "/login";
+          }, 500);
+        }, 2000); // 2 second delay to show the toast
       } else {
+        console.log("Registration failed with status:", response.status);
         const error = await response.json();
+        console.log("Registration error:", error);
         toast({
           title: "Erro no cadastro",
           description: error.message || "Tente novamente",
@@ -95,6 +134,7 @@ export default function MerchantSignupForm({ onBack }: MerchantSignupFormProps) 
         });
       }
     } catch (error) {
+      console.error("Network or connection error during registration:", error);
       toast({
         title: "Erro de conexão",
         description: "Não foi possível conectar ao servidor",
@@ -260,7 +300,7 @@ export default function MerchantSignupForm({ onBack }: MerchantSignupFormProps) 
                   Plano VIP - 30 Dias
                 </Label>
                 <Badge className="bg-amber-100 text-amber-800">
-                  R$ 50,00/mês
+                  R$ {vipPrice}/mês
                 </Badge>
               </div>
               <p className="text-sm text-muted-foreground mt-1">
@@ -305,7 +345,7 @@ export default function MerchantSignupForm({ onBack }: MerchantSignupFormProps) 
           <h3 className="font-medium mb-2">Resumo do Pedido</h3>
           <div className="flex justify-between">
             <span>Plano VIP - 30 dias</span>
-            <span className="font-medium">R$ 50,00</span>
+            <span className="font-medium">R$ {vipPrice}</span>
           </div>
         </div>
 
@@ -350,6 +390,8 @@ export default function MerchantSignupForm({ onBack }: MerchantSignupFormProps) 
       </CardContent>
     </>
   );
+
+  // Removed isRedirecting render that was blocking the redirect
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary/5 to-accent/10 flex items-center justify-center p-4">

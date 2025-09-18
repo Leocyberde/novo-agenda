@@ -24,6 +24,7 @@ import ClientBooking from "@/pages/client-booking";
 import MerchantPenalties from "@/pages/merchant-penalties";
 import Promotions from "@/pages/promotions";
 import NotFound from "@/pages/not-found";
+import AdminSettings from "@/pages/admin-settings";
 
 function ProtectedRoute({ component: Component }: { component: () => JSX.Element }): JSX.Element {
   const [isAuthenticated, setIsAuthenticated] = useState(authService.getState().isAuthenticated);
@@ -70,6 +71,7 @@ function Router() {
       <Route path="/merchant-settings" component={MerchantSettings} />
       <Route path="/employee-days-off" component={EmployeeDaysOff} />
       <Route path="/merchant-penalties" component={MerchantPenalties} />
+      <Route path="/admin-settings" component={AdminSettings} />
       <Route path="/employee-dashboard" component={() => <ProtectedRoute component={EmployeeDashboard} />} />
       <Route path="/client-dashboard" component={() => <ProtectedRoute component={ClientDashboard} />} />
       <Route path="/new-appointment" component={() => <ProtectedRoute component={NewAppointment} />} />
@@ -79,7 +81,7 @@ function Router() {
       <Route path="/clients" component={Clients} />
       <Route path="/services" component={Services} />
       <Route path="/merchants" component={() => <ProtectedRoute component={Merchants} />} />
-      <Route path="/merchant-access" component={() => <ProtectedRoute component={MerchantAccess} />} />
+      <Route path="/merchant-access" component={MerchantAccess} />
       <Route path="/reports" component={() => <ProtectedRoute component={Reports} />} />
       <Route path="/client-booking" component={ClientBooking} />
       <Route path="/promotions" component={Promotions} />

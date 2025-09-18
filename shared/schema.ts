@@ -34,7 +34,7 @@ export const merchants = pgTable("merchants", {
   lastPaymentDate: timestamp("last_payment_date"), // Last payment date
   nextPaymentDue: timestamp("next_payment_due"), // Next payment due date
   monthlyFee: integer("monthly_fee").default(5000), // Monthly fee in cents (default R$ 50.00)
-  paymentStatus: text("payment_status").notNull().default("pending"), // pending, paid, overdue
+  paymentStatus: text("payment_status").notNull().default("pending"), // pending, paid, overdue, trial
   // Plan management
   planStatus: text("plan_status").notNull().default("free"), // free, vip
   planValidity: timestamp("plan_validity"), // When the current plan expires
@@ -173,6 +173,16 @@ export const employeeDaysOff = pgTable("employee_days_off", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+export const systemSettings = pgTable("system_settings", {
+  id: text("id").primaryKey(),
+  key: text("key").notNull().unique(), // Setting key (e.g., 'vip_plan_price')
+  value: text("value").notNull(), // Setting value as string
+  description: text("description"), // Human-readable description
+  type: text("type").notNull().default("string"), // data type: string, number, boolean
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 export const insertUserSchema = createInsertSchema(users).omit({
   id: true,
   createdAt: true,
@@ -230,11 +240,23 @@ export const insertPromotionSchema = createInsertSchema(promotions).omit({
   updatedAt: true,
 });
 
+export const insertSystemSettingSchema = createInsertSchema(systemSettings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const systemSettingSchema = insertSystemSettingSchema.extend({
+  key: z.string().min(1, "Chave da configuração é obrigatória"),
+  value: z.string().min(1, "Valor da configuração é obrigatório"),
+  type: z.enum(["string", "number", "boolean"]).default("string"),
+});
+
 // Schema for merchant access management
 export const merchantAccessSchema = z.object({
   accessDurationDays: z.number().min(1, "Duração deve ser pelo menos 1 dia").max(365, "Duração máxima é 365 dias"),
   monthlyFee: z.number().min(0, "Taxa mensal deve ser maior ou igual a zero"),
-  paymentStatus: z.enum(["pending", "paid", "overdue"], {
+  paymentStatus: z.enum(["pending", "paid", "overdue", "trial"], {
     invalid_type_error: "Status de pagamento inválido"
   }),
 });
@@ -342,3 +364,5 @@ export type Promotion = typeof promotions.$inferSelect;
 export type NewPromotion = typeof promotions.$inferInsert;
 export type EmployeeDayOff = typeof employeeDaysOff.$inferSelect;
 export type NewEmployeeDayOff = typeof employeeDaysOff.$inferInsert;
+export type SystemSetting = typeof systemSettings.$inferSelect;
+export type NewSystemSetting = typeof systemSettings.$inferInsert;

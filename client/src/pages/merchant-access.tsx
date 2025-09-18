@@ -341,8 +341,14 @@ export default function MerchantAccess() {
                           </td>
                           <td className="py-3">
                             <div className="font-medium">{formatCurrency(merchant.monthlyFee)}</div>
-                            <Badge variant={merchant.paymentStatus === "paid" ? "default" : "destructive"} className="text-xs">
-                              {merchant.paymentStatus === "paid" ? "Pago" : "Pendente"}
+                            <Badge variant={
+                              merchant.paymentStatus === "paid" ? "default" : 
+                              merchant.paymentStatus === "trial" ? "secondary" : 
+                              "destructive"
+                            } className="text-xs">
+                              {merchant.paymentStatus === "paid" ? "Pago" : 
+                               merchant.paymentStatus === "trial" ? "Teste Grátis" : 
+                               "Pendente"}
                             </Badge>
                           </td>
                           <td className="py-3">

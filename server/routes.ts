@@ -1,8 +1,8 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { PostgreSQLStorage } from "./sqlite-storage";
+import { PostgreSQLStorage } from "./sqlite-storage.js";
 const storage = new PostgreSQLStorage();
-import { loginSchema, changePasswordSchema, insertMerchantSchema, merchantScheduleSchema, serviceSchema, appointmentSchema, insertEmployeeSchema, insertClientSchema, merchantPoliciesSchema, insertPromotionSchema, type PublicMerchant, type Merchant, type Service, type Employee, type PublicEmployee, type Client, type PublicClient, type Appointment, type EmployeeDayOff, type InsertEmployeeDayOff, type Promotion, type InsertPromotion } from "../shared/schema";
+import { loginSchema, changePasswordSchema, insertMerchantSchema, merchantScheduleSchema, serviceSchema, appointmentSchema, insertEmployeeSchema, insertClientSchema, merchantPoliciesSchema, insertPromotionSchema, insertPromotionSchema as promotionSchema, merchantPoliciesSchema as bookingPoliciesSchema, type PublicMerchant, type Merchant, type Service, type Employee, type PublicEmployee, type Client, type PublicClient, type Appointment, type EmployeeDayOff, type InsertEmployeeDayOff, type Promotion, type InsertPromotion } from "../shared/schema.js";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
 import { z } from "zod";
@@ -587,6 +587,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Este email já está cadastrado no sistema" });
       }
 
+      // Get plan configuration from system settings
+      const vipPriceSetting = await storage.getSystemSetting('vip_plan_price');
+      const trialDurationSetting = await storage.getSystemSetting('trial_plan_duration');
+      const vipDurationSetting = await storage.getSystemSetting('vip_plan_duration');
+
+      const vipPrice = vipPriceSetting ? parseInt(vipPriceSetting.value) : 5000; // Default R$ 50.00
+      const trialDuration = trialDurationSetting ? parseInt(trialDurationSetting.value) : 10; // Default 10 days
+      const vipDuration = vipDurationSetting ? parseInt(vipDurationSetting.value) : 30; // Default 30 days
+
       // Create merchant with appropriate initial status
       let initialStatus = "active"; // Default for trial
       
@@ -602,10 +611,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
       
       const now = new Date();
-      let accessDurationDays = 10; // Default for trial
+      let accessDurationDays = trialDuration; // Use system setting for trial
       
       if (validatedPlanType === "vip") {
-        accessDurationDays = 30;
+        accessDurationDays = vipDuration; // Use system setting for VIP
       }
 
       const accessEndDate = new Date(now);
@@ -619,10 +628,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         accessStartDate: now,
         accessEndDate: accessEndDate,
         accessDurationDays: accessDurationDays,
-        lastPaymentDate: now,
+        lastPaymentDate: validatedPlanType === "trial" ? now : null, // Only set payment date for trial
         nextPaymentDue: nextPaymentDue,
-        paymentStatus: validatedPlanType === "trial" ? "paid" as const : "pending" as const,
-        monthlyFee: validatedPlanType === "vip" ? 5000 : 0, // R$ 50.00 in cents for VIP
+        paymentStatus: validatedPlanType === "trial" ? "trial" as const : "pending" as const, // Trial status for free accounts
+        monthlyFee: validatedPlanType === "vip" ? vipPrice : 0, // Use system setting for VIP price
       };
 
       console.log(`Updating merchant ${merchant.id} with access settings:`, accessUpdates);
@@ -704,9 +713,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           accessStartDate: now,
           accessEndDate: accessEndDate,
           accessDurationDays: 7,
-          lastPaymentDate: now,
+          lastPaymentDate: null, // No payment made for admin-created trial
           nextPaymentDue: nextPaymentDue,
-          paymentStatus: "paid" as const, // Free trial period counts as "paid"
+          paymentStatus: "trial" as const, // Trial status for admin-created accounts
         };
 
         await storage.updateMerchant(merchant.id, accessUpdates);
@@ -3867,6 +3876,77 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error updating penalty status:", error);
       res.status(500).json({ message: "Erro ao atualizar status da multa" });
+    }
+  });
+
+  // System Settings endpoints (Admin only)
+  
+  // Get all system settings
+  app.get("/api/admin/system-settings", authenticateToken, requireRole(["admin"]), async (req, res) => {
+    try {
+      const settings = await storage.getAllSystemSettings();
+      res.json(settings);
+    } catch (error) {
+      console.error("Error getting system settings:", error);
+      res.status(500).json({ message: "Erro ao buscar configurações do sistema" });
+    }
+  });
+
+  // Get specific system setting
+  app.get("/api/admin/system-settings/:key", authenticateToken, requireRole(["admin"]), async (req, res) => {
+    try {
+      const setting = await storage.getSystemSetting(req.params.key);
+      if (!setting) {
+        return res.status(404).json({ message: "Configuração não encontrada" });
+      }
+      res.json(setting);
+    } catch (error) {
+      console.error("Error getting system setting:", error);
+      res.status(500).json({ message: "Erro ao buscar configuração" });
+    }
+  });
+
+  // Update system setting
+  app.put("/api/admin/system-settings/:key", authenticateToken, requireRole(["admin"]), async (req, res) => {
+    try {
+      const { value } = req.body;
+      
+      if (value === undefined || value === null) {
+        return res.status(400).json({ message: "Valor é obrigatório" });
+      }
+
+      const setting = await storage.updateSystemSetting(req.params.key, String(value));
+      if (!setting) {
+        return res.status(404).json({ message: "Configuração não encontrada" });
+      }
+
+      res.json({ message: "Configuração atualizada com sucesso", setting });
+    } catch (error) {
+      console.error("Error updating system setting:", error);
+      res.status(500).json({ message: "Erro ao atualizar configuração" });
+    }
+  });
+
+  // Create new system setting
+  app.post("/api/admin/system-settings", authenticateToken, requireRole(["admin"]), async (req, res) => {
+    try {
+      const { key, value, description, type } = req.body;
+      
+      if (!key || value === undefined || value === null) {
+        return res.status(400).json({ message: "Chave e valor são obrigatórios" });
+      }
+
+      const setting = await storage.createSystemSetting({
+        key,
+        value: String(value),
+        description,
+        type: type || 'string'
+      });
+
+      res.status(201).json({ message: "Configuração criada com sucesso", setting });
+    } catch (error) {
+      console.error("Error creating system setting:", error);
+      res.status(500).json({ message: "Erro ao criar configuração" });
     }
   });
 
