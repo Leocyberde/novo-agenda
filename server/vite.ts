@@ -45,7 +45,22 @@ export async function setupVite(app: Express, server: Server) {
   });
 
   app.use(vite.middlewares);
+  // API 404 handler before Vite catch-all
+  app.use("/api/*", (req: Request, res: Response) => {
+    res.status(404).json({ message: "API endpoint not found" });
+  });
+
   app.use("*", async (req: Request, res: Response, next: NextFunction) => {
+    // Only handle GET requests for frontend routes
+    if (req.method !== 'GET') {
+      return next();
+    }
+
+    // Skip API and uploads routes 
+    if (req.path.startsWith('/api') || req.path.startsWith('/uploads')) {
+      return next();
+    }
+
     const url = req.originalUrl;
 
     try {

@@ -1,7 +1,8 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage.js";
-import { loginSchema, changePasswordSchema, insertMerchantSchema, merchantScheduleSchema, serviceSchema, appointmentSchema, insertEmployeeSchema, insertClientSchema, bookingPoliciesSchema, promotionSchema, type PublicMerchant, type Merchant, type Service, type Employee, type PublicEmployee, type Client, type PublicClient, type Appointment, type EmployeeDayOff, type InsertEmployeeDayOff, type Promotion, type InsertPromotion } from "@shared/schema";
+import { PostgreSQLStorage } from "./sqlite-storage";
+const storage = new PostgreSQLStorage();
+import { loginSchema, changePasswordSchema, insertMerchantSchema, merchantScheduleSchema, serviceSchema, appointmentSchema, insertEmployeeSchema, insertClientSchema, merchantPoliciesSchema, insertPromotionSchema, type PublicMerchant, type Merchant, type Service, type Employee, type PublicEmployee, type Client, type PublicClient, type Appointment, type EmployeeDayOff, type InsertEmployeeDayOff, type Promotion, type InsertPromotion } from "../shared/schema";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
 import { z } from "zod";
@@ -9,6 +10,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { randomUUID } from "crypto";
+import { sendWelcomeEmail } from "./email-service.js";
 
 const JWT_SECRET = process.env.JWT_SECRET || (() => {
   if (process.env.NODE_ENV === 'production') {
@@ -556,6 +558,124 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Public merchant registration (no authentication required)
+  app.post("/api/merchants/register", async (req, res) => {
+    try {
+      const { planType, ...merchantData } = req.body;
+      
+      // Validate planType
+      const validatedPlanType = z.enum(["trial", "vip"]).default("trial").parse(planType);
+      
+      // Validate merchant data
+      const validatedData = insertMerchantSchema.parse(merchantData);
+
+      console.log(`=== MERCHANT REGISTRATION ===`);
+      console.log(`Email: ${validatedData.email}`);
+      console.log(`Plan: ${validatedPlanType}`);
+      console.log(`Original password length: ${validatedData.password.length}`);
+
+      // Check if email already exists in merchants table
+      const existingMerchant = await storage.getMerchantByEmail(validatedData.email);
+      if (existingMerchant) {
+        console.log(`Email ${validatedData.email} already exists`);
+        return res.status(400).json({ message: "Email já está em uso" });
+      }
+
+      // Check if email exists in other user tables
+      const existingUser = await storage.getUserByEmail(validatedData.email);
+      if (existingUser) {
+        return res.status(400).json({ message: "Este email já está cadastrado no sistema" });
+      }
+
+      // Create merchant with appropriate initial status
+      let initialStatus = "active"; // Default for trial
+      
+      // Determine plan configuration
+      if (validatedPlanType === "vip") {
+        initialStatus = "payment_pending"; // VIP requires payment confirmation
+      }
+
+      // Pass the plain password to storage - it will handle the hashing
+      const merchant = await storage.createMerchant({
+        ...validatedData,
+        status: initialStatus
+      });
+      
+      const now = new Date();
+      let accessDurationDays = 10; // Default for trial
+      
+      if (validatedPlanType === "vip") {
+        accessDurationDays = 30;
+      }
+
+      const accessEndDate = new Date(now);
+      accessEndDate.setDate(now.getDate() + accessDurationDays);
+      
+      const nextPaymentDue = new Date(now);
+      nextPaymentDue.setDate(now.getDate() + accessDurationDays);
+
+      const accessUpdates = {
+        status: initialStatus,
+        accessStartDate: now,
+        accessEndDate: accessEndDate,
+        accessDurationDays: accessDurationDays,
+        lastPaymentDate: now,
+        nextPaymentDue: nextPaymentDue,
+        paymentStatus: validatedPlanType === "trial" ? "paid" as const : "pending" as const,
+        monthlyFee: validatedPlanType === "vip" ? 5000 : 0, // R$ 50.00 in cents for VIP
+      };
+
+      console.log(`Updating merchant ${merchant.id} with access settings:`, accessUpdates);
+      await storage.updateMerchant(merchant.id, accessUpdates);
+      
+      // Get the updated merchant to return
+      const updatedMerchant = await storage.getMerchant(merchant.id);
+      console.log(`Final merchant state:`, {
+        id: updatedMerchant?.id,
+        email: updatedMerchant?.email,
+        status: updatedMerchant?.status,
+        paymentStatus: updatedMerchant?.paymentStatus,
+        accessEndDate: updatedMerchant?.accessEndDate
+      });
+      console.log(`=== END MERCHANT REGISTRATION ===`);
+      
+      // Send welcome email (fire-and-forget to avoid blocking response)
+      sendWelcomeEmail({
+        name: validatedData.name,
+        ownerName: validatedData.ownerName,
+        email: validatedData.email,
+        phone: validatedData.phone,
+        address: validatedData.address,
+        planType: validatedPlanType,
+        accessEndDate: accessEndDate,
+      }).then(emailResult => {
+        if (emailResult.success) {
+          console.log(`Welcome email sent successfully to ${validatedData.email}`);
+        } else {
+          console.error(`Failed to send welcome email to ${validatedData.email}:`, emailResult.error);
+        }
+      }).catch(error => {
+        console.error(`Error in welcome email promise for ${validatedData.email}:`, error);
+      });
+
+      res.status(201).json({
+        success: true,
+        merchant: toPublicMerchant(updatedMerchant!),
+        message: validatedPlanType === "trial" 
+          ? "Cadastro realizado com sucesso! Sua conta está ativa por 10 dias. Verifique seu email para mais informações."
+          : "Cadastro realizado! Aguardando confirmação de pagamento. Verifique seu email para mais informações.",
+        planType: validatedPlanType,
+        emailSent: "pending" // Email is sent asynchronously
+      });
+    } catch (error) {
+      console.error("Error in merchant registration:", error);
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Dados inválidos", errors: error.errors });
+      }
+      res.status(500).json({ message: "Erro ao criar comerciante" });
+    }
+  });
+
   // Create new merchant
   app.post("/api/merchants", authenticateToken, async (req, res) => {
     try {
@@ -900,6 +1020,82 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       console.error("Booking policies update error:", error);
       res.status(500).json({ message: "Erro ao atualizar políticas de agendamento" });
+    }
+  });
+
+  // VIP Plan Management endpoints
+  app.post("/api/merchant/upgrade-vip", authenticateToken, async (req, res) => {
+    try {
+      if (req.user.role !== "merchant") {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      const merchantId = req.user.userId;
+      const now = new Date();
+      const vipEndDate = new Date(now);
+      vipEndDate.setDate(now.getDate() + 30); // 30 days VIP
+
+      const merchant = await storage.updateMerchant(merchantId, {
+        planStatus: "vip",
+        planValidity: vipEndDate,
+        paymentStatus: "paid"
+      });
+
+      if (!merchant) {
+        return res.status(404).json({ message: "Comerciante não encontrado" });
+      }
+
+      res.json({ 
+        message: "Plano VIP ativado com sucesso!",
+        planValidity: vipEndDate,
+        planStatus: "vip"
+      });
+    } catch (error) {
+      console.error("Error upgrading to VIP:", error);
+      res.status(500).json({ message: "Erro ao ativar plano VIP" });
+    }
+  });
+
+  app.post("/api/merchant/renew-vip", authenticateToken, async (req, res) => {
+    try {
+      if (req.user.role !== "merchant") {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      const merchantId = req.user.userId;
+      const merchant = await storage.getMerchant(merchantId);
+      
+      if (!merchant) {
+        return res.status(404).json({ message: "Comerciante não encontrado" });
+      }
+
+      const now = new Date();
+      let newEndDate: Date;
+
+      if (merchant.planValidity && new Date(merchant.planValidity) > now) {
+        // Extend from current end date
+        newEndDate = new Date(merchant.planValidity);
+        newEndDate.setDate(newEndDate.getDate() + 30);
+      } else {
+        // Start from now if expired
+        newEndDate = new Date(now);
+        newEndDate.setDate(now.getDate() + 30);
+      }
+
+      const updatedMerchant = await storage.updateMerchant(merchantId, {
+        planStatus: "vip",
+        planValidity: newEndDate,
+        paymentStatus: "paid"
+      });
+
+      res.json({ 
+        message: "Plano VIP renovado com sucesso!",
+        planValidity: newEndDate,
+        planStatus: "vip"
+      });
+    } catch (error) {
+      console.error("Error renewing VIP:", error);
+      res.status(500).json({ message: "Erro ao renovar plano VIP" });
     }
   });
 
@@ -2075,10 +2271,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ message: "Acesso negado" });
       }
 
+      console.log("Getting merchant stats for:", req.user.userId);
       const stats = await storage.getMerchantDashboardStats(req.user.userId);
+      console.log("Merchant stats retrieved:", stats);
       res.json(stats);
     } catch (error) {
-      res.status(500).json({ message: "Erro ao buscar estatísticas" });
+      console.error("Error in merchant stats endpoint:", error);
+      res.status(500).json({ message: "Erro ao buscar estatísticas", error: error.message });
     }
   });
 
@@ -2247,6 +2446,96 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching client stats:", error);
       res.status(500).json({ message: "Erro ao buscar estatísticas do cliente" });
+    }
+  });
+
+  // Upgrade merchant to VIP plan
+  app.post("/api/merchant/upgrade-to-vip", authenticateToken, async (req, res) => {
+    try {
+      if (req.user.role !== "merchant") {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      const merchantId = req.user.userId;
+      const merchant = await storage.getMerchant(merchantId);
+
+      if (!merchant) {
+        return res.status(404).json({ message: "Comerciante não encontrado" });
+      }
+
+      // Calculate new plan validity (30 days from now)
+      const now = new Date();
+      const planValidity = new Date(now.getTime() + (30 * 24 * 60 * 60 * 1000)); // 30 days
+
+      const updates = {
+        planStatus: "vip",
+        planValidity: planValidity,
+      };
+
+      const updatedMerchant = await storage.updateMerchant(merchantId, updates);
+
+      if (!updatedMerchant) {
+        return res.status(500).json({ message: "Erro ao ativar plano VIP" });
+      }
+
+      res.json({
+        message: "Plano VIP ativado com sucesso! Válido por 30 dias.",
+        merchant: {
+          id: updatedMerchant.id,
+          planStatus: updatedMerchant.planStatus,
+          planValidity: updatedMerchant.planValidity,
+        }
+      });
+    } catch (error) {
+      console.error("Error upgrading to VIP:", error);
+      res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // Renew VIP plan
+  app.post("/api/merchant/renew-vip", authenticateToken, async (req, res) => {
+    try {
+      if (req.user.role !== "merchant") {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      const merchantId = req.user.userId;
+      const merchant = await storage.getMerchant(merchantId);
+
+      if (!merchant) {
+        return res.status(404).json({ message: "Comerciante não encontrado" });
+      }
+
+      // Calculate new validity (add 30 days to current validity or now if expired)
+      const now = new Date();
+      const currentValidity = merchant.planValidity ? new Date(merchant.planValidity) : now;
+      const baseDate = currentValidity > now ? currentValidity : now;
+      const newValidity = new Date(baseDate.getTime() + (30 * 24 * 60 * 60 * 1000)); // Add 30 days
+
+      const updates = {
+        planStatus: "vip",
+        planValidity: newValidity,
+      };
+
+      const updatedMerchant = await storage.updateMerchant(merchantId, updates);
+
+      if (!updatedMerchant) {
+        return res.status(500).json({ message: "Erro ao renovar plano VIP" });
+      }
+
+      const daysAdded = Math.ceil((newValidity.getTime() - baseDate.getTime()) / (1000 * 60 * 60 * 24));
+
+      res.json({
+        message: `Plano VIP renovado com sucesso! ${daysAdded} dias adicionados.`,
+        merchant: {
+          id: updatedMerchant.id,
+          planStatus: updatedMerchant.planStatus,
+          planValidity: updatedMerchant.planValidity,
+        }
+      });
+    } catch (error) {
+      console.error("Error renewing VIP:", error);
+      res.status(500).json({ message: "Erro interno do servidor" });
     }
   });
 
@@ -3199,6 +3488,145 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Debug endpoint to clean duplicate merchant data
+  app.post("/api/debug/clean-duplicates", async (req, res) => {
+    try {
+      console.log("\n=== CLEANING DUPLICATE MERCHANT DATA ===");
+
+      const { email } = req.body;
+      if (!email) {
+        return res.status(400).json({ error: "Email é obrigatório" });
+      }
+
+      // Get all merchants with this email
+      const merchants = await storage.getAllMerchants();
+      const duplicates = merchants.filter(m => m.email === email);
+
+      console.log(`Found ${duplicates.length} merchants with email ${email}`);
+
+      if (duplicates.length <= 1) {
+        return res.json({ message: "Nenhum duplicado encontrado", duplicates: duplicates.length });
+      }
+
+      // Keep the most recent one and delete others
+      const sortedDuplicates = duplicates.sort((a, b) => 
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+
+      const keepMerchant = sortedDuplicates[0];
+      const toDelete = sortedDuplicates.slice(1);
+
+      console.log(`Keeping merchant: ${keepMerchant.id} (${keepMerchant.createdAt})`);
+      console.log(`Deleting ${toDelete.length} duplicates`);
+
+      let deletedCount = 0;
+      for (const duplicate of toDelete) {
+        const success = await storage.deleteMerchant(duplicate.id);
+        if (success) {
+          deletedCount++;
+          console.log(`Deleted duplicate: ${duplicate.id}`);
+        }
+      }
+
+      console.log(`=== CLEANUP COMPLETE: Deleted ${deletedCount} duplicates ===\n`);
+
+      res.json({ 
+        message: `Limpeza concluída: ${deletedCount} duplicados removidos`,
+        keptMerchant: keepMerchant.id,
+        deletedCount 
+      });
+    } catch (error: any) {
+      console.error("Cleanup error:", error);
+      res.status(500).json({ error: error?.message || "Erro desconhecido" });
+    }
+  });
+
+  // Debug endpoint to reset merchant password  
+  app.post("/api/debug/reset-merchant-password", async (req, res) => {
+    try {
+      console.log("\n=== RESETTING MERCHANT PASSWORD ===");
+
+      const { email, newPassword } = req.body;
+      if (!email || !newPassword) {
+        return res.status(400).json({ error: "Email e nova senha são obrigatórios" });
+      }
+
+      // Find merchant by email
+      const merchant = await storage.getMerchantByEmail(email);
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant não encontrado" });
+      }
+
+      console.log(`Resetting password for merchant: ${email}`);
+      console.log(`Merchant ID: ${merchant.id}`);
+      console.log(`Current status: ${merchant.status}`);
+
+      // Update password directly using the storage method
+      const success = await storage.updateMerchantPassword(merchant.id, newPassword);
+      
+      if (success) {
+        console.log(`Password successfully reset for merchant: ${email}`);
+        res.json({ 
+          message: `Senha redefinida com sucesso para ${email}`,
+          merchantId: merchant.id,
+          status: merchant.status
+        });
+      } else {
+        res.status(500).json({ error: "Falha ao redefinir senha" });
+      }
+
+      console.log("=== END PASSWORD RESET ===\n");
+    } catch (error: any) {
+      console.error("Password reset error:", error);
+      res.status(500).json({ error: error?.message || "Erro desconhecido" });
+    }
+  });
+
+  // Debug endpoint to set default password for all merchants
+  app.post("/api/debug/reset-all-merchant-passwords", async (req, res) => {
+    try {
+      console.log("\n=== RESETTING ALL MERCHANT PASSWORDS ===");
+
+      const { newPassword } = req.body;
+      const defaultPassword = newPassword || "123456";
+      
+      // Get all merchants
+      const merchants = await storage.getAllMerchants();
+      console.log(`Found ${merchants.length} merchants to reset`);
+
+      let successCount = 0;
+      let failedCount = 0;
+
+      for (const merchant of merchants) {
+        try {
+          const success = await storage.updateMerchantPassword(merchant.id, defaultPassword);
+          if (success) {
+            successCount++;
+            console.log(`✅ Reset password for: ${merchant.email}`);
+          } else {
+            failedCount++;
+            console.log(`❌ Failed to reset password for: ${merchant.email}`);
+          }
+        } catch (error) {
+          failedCount++;
+          console.log(`❌ Error resetting password for ${merchant.email}:`, error);
+        }
+      }
+
+      console.log(`=== RESET COMPLETE: ${successCount} success, ${failedCount} failed ===\n`);
+
+      res.json({ 
+        message: `Senhas redefinidas: ${successCount} sucessos, ${failedCount} falhas`,
+        defaultPassword: defaultPassword,
+        successCount,
+        failedCount
+      });
+    } catch (error: any) {
+      console.error("Bulk password reset error:", error);
+      res.status(500).json({ error: error?.message || "Erro desconhecido" });
+    }
+  });
+
   // Debug endpoint to fix service merchant assignment
   app.post("/api/debug/fix-service-merchant", async (req, res) => {
     try {
@@ -3318,6 +3746,103 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error getting client penalties:", error);
       res.status(500).json({ message: "Erro ao buscar multas" });
+    }
+  });
+
+  // VIP Plan Management endpoints  
+  app.post("/api/merchant/upgrade-to-vip", authenticateToken, async (req, res) => {
+    try {
+      if (req.user.role !== "merchant") {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      const merchantId = req.user.userId;
+      const merchant = await storage.getMerchant(merchantId);
+      
+      if (!merchant) {
+        return res.status(404).json({ message: "Comerciante não encontrado" });
+      }
+
+      const now = new Date();
+      const planValidity = new Date(now.getTime() + (30 * 24 * 60 * 60 * 1000)); // 30 days
+
+      const updates = {
+        planStatus: "vip",
+        planValidity: planValidity,
+        monthlyFee: 5000, // R$ 50.00 in cents
+        paymentStatus: "paid" as const,
+      };
+
+      const updatedMerchant = await storage.updateMerchant(merchantId, updates);
+
+      if (!updatedMerchant) {
+        return res.status(500).json({ message: "Erro ao ativar plano VIP" });
+      }
+
+      res.json({
+        message: "Plano VIP ativado com sucesso! Válido por 30 dias.",
+        merchant: {
+          id: updatedMerchant.id,
+          planStatus: updatedMerchant.planStatus,
+          planValidity: updatedMerchant.planValidity,
+        }
+      });
+    } catch (error) {
+      console.error("Error upgrading to VIP:", error);
+      res.status(500).json({ message: "Erro ao ativar plano VIP" });
+    }
+  });
+
+  app.post("/api/merchant/renew-vip", authenticateToken, async (req, res) => {
+    try {
+      if (req.user.role !== "merchant") {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      const merchantId = req.user.userId;
+      const merchant = await storage.getMerchant(merchantId);
+      
+      if (!merchant) {
+        return res.status(404).json({ message: "Comerciante não encontrado" });
+      }
+
+      const now = new Date();
+      let newValidity = new Date();
+      
+      // If merchant still has valid plan, extend from current validity
+      if (merchant.planValidity && new Date(merchant.planValidity) > now) {
+        newValidity = new Date(merchant.planValidity);
+      } else {
+        newValidity = new Date(now);
+      }
+      
+      newValidity.setDate(newValidity.getDate() + 30);
+
+      const updates = {
+        planStatus: "vip",
+        planValidity: newValidity,
+        paymentStatus: "paid" as const,
+      };
+
+      const updatedMerchant = await storage.updateMerchant(merchantId, updates);
+
+      if (!updatedMerchant) {
+        return res.status(500).json({ message: "Erro ao renovar plano VIP" });
+      }
+
+      const daysAdded = Math.ceil((newValidity.getTime() - (merchant.planValidity ? new Date(merchant.planValidity).getTime() : now.getTime())) / (1000 * 60 * 60 * 24));
+
+      res.json({
+        message: `Plano VIP renovado com sucesso! ${daysAdded} dias adicionados.`,
+        merchant: {
+          id: updatedMerchant.id,
+          planStatus: updatedMerchant.planStatus,
+          planValidity: updatedMerchant.planValidity,
+        }
+      });
+    } catch (error) {
+      console.error("Error renewing VIP:", error);
+      res.status(500).json({ message: "Erro ao renovar plano VIP" });
     }
   });
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Calendar, Clock, Users, User, UserCheck, Phone, Mail, DollarSign, StickyNote, Plus, AlertCircle } from "lucide-react";
@@ -155,6 +155,7 @@ export default function MerchantDashboard() {
   const [selectedService, setSelectedService] = useState<any>(null);
   const [showServiceModal, setShowServiceModal] = useState(false);
   const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   useEffect(() => {
     const unsubscribe = authService.subscribe((state) => {
@@ -377,6 +378,109 @@ export default function MerchantDashboard() {
     },
   ];
 
+  // Mutation for upgrading to VIP
+  const { mutate: upgradeMutation, isLoading: upgradeLoading } = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/merchant/upgrade-to-vip", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${authService.getState().token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Erro ao ativar plano VIP");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: [`/api/merchants/${user?.id}`] });
+      toast({
+        title: "Plano VIP ativado com sucesso!",
+        description: data.message,
+        variant: "success"
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Erro ao ativar plano VIP",
+        description: error.message || "Por favor, tente novamente.",
+        variant: "destructive"
+      });
+    },
+  });
+
+  // Mutation for renewing VIP
+  const { mutate: renewMutation, isLoading: renewLoading } = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/merchant/renew-vip", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${authService.getState().token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Erro ao renovar plano VIP");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: [`/api/merchants/${user?.id}`] });
+      toast({
+        title: "Plano VIP renovado com sucesso!",
+        description: data.message,
+        variant: "success"
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Erro ao renovar plano VIP",
+        description: error.message || "Por favor, tente novamente.",
+        variant: "destructive"
+      });
+    },
+  });
+
+  // Fetch merchant data to check plan status and validity
+  const { data: merchantData, isLoading: merchantDataLoading } = useQuery<any>({
+    queryKey: [`/api/merchants/${user?.id}`],
+    queryFn: async () => {
+      const response = await fetch(`/api/merchants/${user?.id}`, {
+        headers: {
+          "Authorization": `Bearer ${authService.getState().token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("Erro ao buscar dados do comerciante");
+      }
+
+      return response.json();
+    },
+    enabled: authService.getState().isAuthenticated && !!user?.id,
+  });
+
+  const planStatus = merchantData?.planStatus || 'free';
+  const planValidity = merchantData?.planValidity; // Assuming this is a date string
+
+  const isExpired = planValidity ? new Date(planValidity) < new Date() : true;
+  const daysUntilExpiration = planValidity ? Math.ceil((new Date(planValidity).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)) : 0;
+
+  const handleUpgradeToVip = () => {
+    upgradeMutation();
+  };
+
+  const handleRenewVip = () => {
+    renewMutation();
+  };
+
   return (
     <div className="min-h-screen bg-background" data-testid="page-merchant-dashboard">
       {/* Header */}
@@ -445,6 +549,57 @@ export default function MerchantDashboard() {
               );
             })}
           </div>
+
+          {/* Plan Information and Actions */}
+          <Card>
+            <div className="p-6 border-b border-border">
+              <h3 className="text-lg font-semibold text-foreground">Seu Plano</h3>
+            </div>
+            <CardContent className="p-6">
+              {merchantDataLoading ? (
+                <p className="text-sm text-muted-foreground">Carregando informações do plano...</p>
+              ) : (
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">
+                      Status do Plano: <Badge variant={planStatus === 'vip' ? 'outline' : 'secondary'}>{planStatus === 'vip' ? 'VIP' : 'Grátis'}</Badge>
+                    </p>
+                    {planValidity && (
+                      <p className="text-sm text-muted-foreground mt-1">
+                        Validade: {new Date(planValidity).toLocaleDateString('pt-BR')}
+                        {isExpired && <span className="text-red-600 ml-2">(Expirado)</span>}
+                      </p>
+                    )}
+                    {planStatus === 'free' && daysUntilExpiration <= 10 && !isExpired && (
+                      <p className="text-sm text-yellow-600 mt-1">
+                        Seu plano grátis expira em {daysUntilExpiration} dias. Considere o upgrade!
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex gap-2">
+                    {planStatus === 'free' || isExpired ? (
+                      <Button 
+                        onClick={handleUpgradeToVip}
+                        disabled={upgradeLoading}
+                        className="bg-blue-600 hover:bg-blue-700 text-white"
+                      >
+                        {upgradeLoading ? "Processando..." : "Contratar VIP - R$ 50,00/mês"}
+                      </Button>
+                    ) : (
+                      <Button 
+                        onClick={handleRenewVip}
+                        disabled={renewLoading}
+                        className="bg-green-600 hover:bg-green-700 text-white"
+                      >
+                        {renewLoading ? "Processando..." : "Renovar VIP por 30 dias"}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           {/* Quick Actions */}
           <div className="grid gap-6 grid-cols-1 md:grid-cols-2 lg:grid-cols-4">
@@ -897,7 +1052,7 @@ export default function MerchantDashboard() {
 
                                       try {
                                         console.log(`Marking appointment ${appointment.id} as paid`);
-                                        
+
                                         const response = await fetch(`/api/appointments/${appointment.id}/status`, {
                                           method: "POST",
                                           headers: {
@@ -914,7 +1069,7 @@ export default function MerchantDashboard() {
                                           // Force immediate refetch of data
                                           await queryClient.invalidateQueries({ queryKey: ["/api/appointments/all"] });
                                           await queryClient.invalidateQueries({ queryKey: ["/api/appointments/pending-payments"] });
-                                          
+
                                           // Force refetch
                                           queryClient.refetchQueries({ queryKey: ["/api/appointments/all"] });
                                           queryClient.refetchQueries({ queryKey: ["/api/appointments/pending-payments"] });
@@ -953,7 +1108,7 @@ export default function MerchantDashboard() {
 
                                       try {
                                         console.log(`Marking appointment ${appointment.id} as pending payment`);
-                                        
+
                                         const response = await fetch(`/api/appointments/${appointment.id}/status`, {
                                           method: "POST",
                                           headers: {
@@ -970,7 +1125,7 @@ export default function MerchantDashboard() {
                                           // Force immediate refetch of data
                                           await queryClient.invalidateQueries({ queryKey: ["/api/appointments/all"] });
                                           await queryClient.invalidateQueries({ queryKey: ["/api/appointments/pending-payments"] });
-                                          
+
                                           // Force refetch
                                           queryClient.refetchQueries({ queryKey: ["/api/appointments/all"] });
                                           queryClient.refetchQueries({ queryKey: ["/api/appointments/pending-payments"] });

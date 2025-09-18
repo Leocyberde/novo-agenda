@@ -35,9 +35,6 @@ export const merchants = pgTable("merchants", {
   nextPaymentDue: timestamp("next_payment_due"), // Next payment due date
   monthlyFee: integer("monthly_fee").default(5000), // Monthly fee in cents (default R$ 50.00)
   paymentStatus: text("payment_status").notNull().default("pending"), // pending, paid, overdue
-  // Plan management
-  planStatus: text("plan_status").notNull().default("free"), // free, vip
-  planValidity: timestamp("plan_validity"), // When the current plan expires
   // Booking policies
   noShowFeeEnabled: boolean("no_show_fee_enabled").notNull().default(false), // Enable/disable no-show fee
   noShowFeeAmount: integer("no_show_fee_amount").default(0), // Fee amount in cents for no-show
@@ -342,3 +339,4 @@ export type Promotion = typeof promotions.$inferSelect;
 export type NewPromotion = typeof promotions.$inferInsert;
 export type EmployeeDayOff = typeof employeeDaysOff.$inferSelect;
 export type NewEmployeeDayOff = typeof employeeDaysOff.$inferInsert;
+

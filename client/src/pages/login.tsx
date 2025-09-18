@@ -10,6 +10,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { loginSchema } from "@shared/schema";
 import type { z } from "zod";
+import MerchantSignupForm from "@/components/auth/merchant-signup-form";
 
 type LoginData = z.infer<typeof loginSchema>;
 
@@ -17,6 +18,7 @@ export default function Login() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
+  const [showSignup, setShowSignup] = useState(false);
 
   const {
     register,
@@ -81,6 +83,10 @@ export default function Login() {
       setIsLoading(false);
     }
   };
+
+  if (showSignup) {
+    return <MerchantSignupForm onBack={() => setShowSignup(false)} />;
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary/5 to-accent/10 flex items-center justify-center p-4" data-testid="page-login">
@@ -157,6 +163,29 @@ export default function Login() {
                 {isLoading ? "Entrando..." : "Entrar"}
               </Button>
             </form>
+
+            {/* Divisor */}
+            <div className="relative">
+              <div className="absolute inset-0 flex items-center">
+                <span className="w-full border-t" />
+              </div>
+              <div className="relative flex justify-center text-xs uppercase">
+                <span className="bg-background px-2 text-muted-foreground">
+                  Ou
+                </span>
+              </div>
+            </div>
+
+            {/* Botão de Cadastro */}
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              onClick={() => setShowSignup(true)}
+              disabled={isLoading}
+            >
+              Cadastre seu Salão
+            </Button>
 
             <div className="pt-4 text-center text-sm text-muted-foreground">
               © 2024 Beauty Scheduler. Todos os direitos reservados.

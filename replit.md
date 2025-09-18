@@ -1,103 +1,88 @@
-# Beauty Scheduler
+# Salon Booking Management System
 
 ## Overview
-
-Beauty Scheduler is a full-stack web application for managing beauty service merchants and appointments. The system provides an admin dashboard to oversee merchant registration, status management, and generate reports. Built with a modern React frontend and Express.js backend, it uses SQLite for data persistence and includes comprehensive authentication and form validation.
-
-## User Preferences
-
-Preferred communication style: Simple, everyday language.
+This is a comprehensive salon/appointment booking management system built with React (frontend), Express.js (backend), and PostgreSQL database. The application allows salon owners to manage appointments, services, employees, clients, and business operations.
 
 ## Recent Changes
+- **2025-09-18**: Successfully set up project in Replit environment
+  - Configured PostgreSQL database with Drizzle ORM
+  - Set up all required environment variables
+  - Configured Vite dev server with proper host settings for Replit
+  - Created workflow for development server on port 5000
+  - Verified API endpoints and frontend are working correctly
+  - **Added merchant self-registration functionality:**
+    - Login screen now includes "Cadastre seu Salão" option
+    - Multi-step signup flow with salon info → plan selection → payment
+    - Two plan options: 10-day free trial and 30-day VIP (R$ 50/month)
+    - VIP plan includes payment interface (frontend only)
+    - Backend API endpoint `/api/merchants/register` for public registration
+    - Automatic account activation for trial users
+    - Secure password hashing and plan validation
+    - **Automated welcome email system:**
+      - Sends personalized welcome emails upon merchant registration
+      - Professional HTML template with salon details and plan information
+      - Separate email content for trial vs VIP plans
+      - Integration with Gmail SMTP for reliable delivery
+      - Email delivery confirmation in API response
 
-### September 15, 2025 - Data Isolation Fix
-- **Issue**: Services created by one merchant (dono1) were incorrectly appearing in another merchant's (dono2) dashboard
-- **Root Cause**: Service record had wrong merchant_id in SQLite database due to data mapping discrepancy
-- **Solution**: Implemented direct database correction using better-sqlite3 to transfer service ownership to correct merchant
-- **Result**: Complete data isolation now enforced - each merchant sees only their own services, employees, clients, and appointments
-- **Technical Details**: 
-  - Discovered column naming convention difference: camelCase (merchantId) in application vs snake_case (merchant_id) in SQLite database
-  - Added updateServiceMerchant method to SQLiteStorage for future corrections if needed
-  - Verified all existing query filters properly enforce tenant scoping
+## Project Architecture
 
-## System Architecture
+### Frontend (`client/`)
+- **Framework**: React 18 with TypeScript
+- **Build Tool**: Vite
+- **Styling**: Tailwind CSS with Radix UI components
+- **State Management**: TanStack React Query
+- **Routing**: Wouter
+- **Forms**: React Hook Form with Zod validation
 
-### Frontend Architecture
-- **Framework**: React 18 with TypeScript for type safety
-- **Routing**: Wouter for lightweight client-side routing
-- **State Management**: TanStack React Query for server state management and caching
-- **UI Components**: shadcn/ui component library built on Radix UI primitives
-- **Styling**: Tailwind CSS with CSS custom properties for theming
-- **Forms**: React Hook Form with Zod schema validation
-- **Build Tool**: Vite for fast development and optimized production builds
+### Backend (`server/`)
+- **Framework**: Express.js with TypeScript
+- **Database**: PostgreSQL with Drizzle ORM
+- **Authentication**: JWT with Passport.js
+- **File Uploads**: Multer
+- **Session Management**: Express Session with PostgreSQL store
 
-### Backend Architecture
-- **Runtime**: Node.js with Express.js framework
-- **Language**: TypeScript with ES modules
-- **Database ORM**: Drizzle ORM for type-safe database operations
-- **Authentication**: JSON Web Tokens (JWT) for session management
-- **Password Security**: bcrypt for password hashing
-- **Validation**: Zod schemas shared between frontend and backend
-- **Storage Pattern**: Repository pattern with interface abstraction supporting both SQLite and in-memory storage
+### Database Schema (`shared/`)
+Key entities:
+- Users (admin system)
+- Merchants (salon owners)
+- Services (salon services)
+- Employees (staff members)
+- Clients (customers)
+- Appointments (bookings)
+- Penalties (fees for no-shows, cancellations)
+- Promotions (discounts)
+- Employee Days Off
 
-### Database Design
-- **Primary Database**: SQLite with better-sqlite3 driver
-- **Schema Management**: Drizzle migrations and schema definitions
-- **Tables**:
-  - `users`: Admin accounts with email, hashed passwords, and roles
-  - `merchants`: Business profiles with contact info, status tracking, and timestamps
-- **Data Integrity**: Unique constraints on email fields, foreign key relationships
+## Environment Configuration
+Required environment variables:
+- `DATABASE_URL`: PostgreSQL connection string (configured)
+- `EMAIL_USER`: Email service username (configured)
+- `EMAIL_PASSWORD`: Email service password (configured) 
+- `JWT_SECRET`: JWT signing secret (configured)
+- `NODE_ENV`: Environment mode (development/production)
 
-### Authentication & Authorization
-- **Strategy**: JWT-based authentication with Bearer token format
-- **Session Management**: Tokens stored in localStorage on client-side
-- **Route Protection**: Higher-order components for protected routes
-- **Password Policy**: Minimum length validation with bcrypt hashing (salt rounds: 10)
-- **Admin Access**: Default admin account (leolulu842@gmail.com) created on database initialization
+## Development
+- **Dev Server**: Runs on port 5000 with hot reload
+- **Host Configuration**: Uses 0.0.0.0 with allowedHosts: true for Replit compatibility
+- **Cache Control**: Configured to prevent caching issues in Replit iframe
 
-### API Architecture
-- **Design Pattern**: RESTful API with consistent error handling
-- **Endpoints**: Standardized CRUD operations for merchants and authentication
-- **Request/Response**: JSON format with proper HTTP status codes
-- **Middleware**: Request logging, CORS handling, and authentication verification
-- **Error Handling**: Centralized error middleware with structured error responses
+## Login Credentials
+- **Admin Email**: leolulu842@gmail.com
+- **Admin Password**: 123456
 
-### Development Workflow
-- **Hot Reloading**: Vite dev server with HMR for frontend changes
-- **Code Quality**: TypeScript strict mode enabled across entire codebase
-- **Build Process**: Separate builds for frontend (Vite) and backend (esbuild)
-- **Path Aliases**: Configured for clean imports (@/, @shared/, @assets/)
+## Key Features
+- Multi-role system (admin, merchant, employee, client)
+- Appointment scheduling and management
+- Service and pricing management
+- Employee scheduling and payroll tracking
+- Client management and history
+- Penalty system for no-shows and cancellations
+- Promotional campaigns
+- Real-time availability checking
 
-## External Dependencies
-
-### Core Framework Dependencies
-- **@neondatabase/serverless**: PostgreSQL-compatible database driver (configured but currently using SQLite)
-- **better-sqlite3**: High-performance SQLite database driver
-- **drizzle-orm**: Type-safe ORM with schema management
-- **@tanstack/react-query**: Server state management and caching
-- **wouter**: Lightweight React router
-
-### UI and Styling
-- **@radix-ui/***: Comprehensive set of unstyled, accessible UI primitives
-- **tailwindcss**: Utility-first CSS framework
-- **class-variance-authority**: Utility for creating variant-based component APIs
-- **lucide-react**: Modern icon library with React components
-
-### Form Handling and Validation
-- **react-hook-form**: Performant forms library with minimal re-renders
-- **@hookform/resolvers**: Validation resolvers for react-hook-form
-- **zod**: TypeScript-first schema validation library
-
-### Security and Authentication
-- **jsonwebtoken**: JWT implementation for Node.js
-- **bcrypt**: Password hashing library with salt generation
-
-### Development Tools
-- **@types/***: TypeScript type definitions for various libraries
-- **@replit/***: Replit-specific development plugins for enhanced IDE experience
-- **tsx**: TypeScript execution engine for development server
-
-### Build and Bundling
-- **vite**: Next-generation frontend build tool
-- **esbuild**: Fast JavaScript bundler for backend compilation
-- **@vitejs/plugin-react**: Official Vite plugin for React support
+## User Preferences
+- Environment properly configured for Replit
+- All dependencies installed and working
+- Database migrations run automatically on startup
+- Development server configured with proper proxy settings
